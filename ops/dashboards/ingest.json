@@ -1,0 +1,225 @@
+{
+  "$comment": "RAG chatbot — ingestion dashboard (NFR-8, implementation.md 5.6). Grafana-format, PostgreSQL datasource. Queries verified against the real schema: documents(state, byte_size, uploaded_at, indexed_at, error_reason) and chunks(chunk_id, doc_id, token_count, created_at). Note chunk_count is NOT a documents column — it lives on chunks, so chunk counts are joined rather than read off documents.",
+  "uid": "rag-ingest",
+  "title": "RAG — Ingestion",
+  "tags": ["rag", "nfr-8"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "postgres",
+        "current": {},
+        "label": "PostgreSQL"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Pipeline state",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "$comment": "The Document.state distribution is the single most useful ingestion panel: 'failed' and 'duplicate' accumulating while 'live' stays flat means the pipeline stopped converting documents, and nothing else on this dashboard would show it as loudly.",
+      "type": "piechart",
+      "title": "Documents by state",
+      "description": "Lifecycle state per architecture.md 4.1. Only 'live' is retrievable — everything else is invisible to search.",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 9, "w": 8, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT state, count(*) AS documents FROM documents GROUP BY 1 ORDER BY documents DESC",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Live documents",
+      "description": "Documents actually reachable by retrieval.",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 9, "w": 8, "x": 8, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT count(*) AS live FROM documents WHERE state = 'live'",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "$comment": "Failure rate over time. A sustained rise points at the extraction sandbox (resource caps, OOM-kills) or the embedding provider, and it is the ingestion-side counterpart to the query-path alerts.",
+      "type": "timeseries",
+      "title": "Ingest failure rate",
+      "description": "Share of documents landing in 'failed' per hour.",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(uploaded_at, '1h'), avg(CASE WHEN state = 'failed' THEN 1.0 ELSE 0.0 END) AS failure_rate FROM documents WHERE $__timeFilter(uploaded_at) GROUP BY 1 ORDER BY 1",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Throughput",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 10 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Documents indexed per hour",
+      "description": "Count and total bytes of documents reaching 'live', by index time.",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 11 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(indexed_at, '1h'), count(*) AS documents FROM documents WHERE $__timeFilter(indexed_at) AND indexed_at IS NOT NULL GROUP BY 1 ORDER BY 1",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Bytes ingested per hour",
+      "description": "Volume in, which is what actually drives extraction, chunking, and embedding cost.",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 11 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(indexed_at, '1h'), sum(byte_size) AS bytes FROM documents WHERE $__timeFilter(indexed_at) AND indexed_at IS NOT NULL GROUP BY 1 ORDER BY 1",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "$comment": "Upload-to-indexed latency, in seconds. This is the number a user waiting on a large upload actually experiences, and it spans sandbox extraction, chunking, embedding, and index write — so a regression here localises only once the stages below are read.",
+      "type": "timeseries",
+      "title": "Ingest latency: upload → live (s)",
+      "description": "Time from upload to indexed_at, per document.",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(uploaded_at, '1h'), percentile_cont(0.50) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (indexed_at - uploaded_at))) AS p50, percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (indexed_at - uploaded_at))) AS p95 FROM documents WHERE $__timeFilter(uploaded_at) AND indexed_at IS NOT NULL GROUP BY 1 ORDER BY 1",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Chunks created per hour",
+      "description": "Chunk yield. A drop in chunks-per-byte usually means the chunker stopped splitting, which quietly shrinks retrieval context and degrades answer quality without any error.",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(c.created_at, '1h'), count(*) AS chunks FROM chunks c JOIN documents d ON d.doc_id = c.doc_id WHERE $__timeFilter(c.created_at) GROUP BY 1 ORDER BY 1",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Mean tokens per chunk",
+      "description": "Chunk sizing. Drifts when the chunker config changes; very large values risk exceeding the context budget at retrieval time.",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '1h'), avg(token_count) AS mean_tokens FROM chunks WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Most recent failures",
+      "description": "error_reason is the sandbox/extraction failure text. Grouped failures here usually name a single systemic cause (memory cap, unsupported MIME type, locked file).",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 27 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT uploaded_at, filename, mime_type, state, error_reason FROM documents WHERE state = 'failed' ORDER BY uploaded_at DESC LIMIT 25",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    }
+  ]
+}

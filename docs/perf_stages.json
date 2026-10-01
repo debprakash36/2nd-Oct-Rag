@@ -1,0 +1,89 @@
+{
+  "mode": "inprocess",
+  "iterations": 100,
+  "stages": [
+    {
+      "stage": "keyword",
+      "label": "Keyword search",
+      "budget_ms": 150.0,
+      "p50_ms": 40.5,
+      "p95_ms": 48.7,
+      "max_ms": 69.0,
+      "mean_ms": 41.5,
+      "n": 100,
+      "over_budget_p95": false
+    },
+    {
+      "stage": "vector",
+      "label": "Vector search",
+      "budget_ms": 150.0,
+      "p50_ms": 37.5,
+      "p95_ms": 41.6,
+      "max_ms": 67.9,
+      "mean_ms": 38.5,
+      "n": 100,
+      "over_budget_p95": false
+    },
+    {
+      "stage": "rerank",
+      "label": "Rerank",
+      "budget_ms": 300.0,
+      "p50_ms": 7.8,
+      "p95_ms": 11.3,
+      "max_ms": 17.4,
+      "mean_ms": 8.2,
+      "n": 100,
+      "over_budget_p95": false
+    },
+    {
+      "stage": "fusion",
+      "label": "Fusion",
+      "budget_ms": 300.0,
+      "p50_ms": 0.1,
+      "p95_ms": 0.1,
+      "max_ms": 0.1,
+      "mean_ms": 0.1,
+      "n": 100,
+      "over_budget_p95": false
+    },
+    {
+      "stage": "rewrite",
+      "label": "Query rewrite",
+      "budget_ms": 400.0,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "max_ms": 0.0,
+      "mean_ms": 0.0,
+      "n": 100,
+      "over_budget_p95": false
+    },
+    {
+      "stage": "threshold",
+      "label": "Threshold",
+      "budget_ms": 50.0,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "max_ms": 0.0,
+      "mean_ms": 0.0,
+      "n": 100,
+      "over_budget_p95": false
+    },
+    {
+      "stage": "budget",
+      "label": "Context budget",
+      "budget_ms": 50.0,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "max_ms": 0.1,
+      "mean_ms": 0.0,
+      "n": 100,
+      "over_budget_p95": false
+    }
+  ],
+  "retrieval_total_ms": {
+    "p50": 86.6,
+    "p95": 99.2,
+    "max": 142.4
+  },
+  "note": "Offline provider: generation is excluded. architecture.md 7.4 budgets LLM first token at 3500 ms, which dominates every figure here."
+}

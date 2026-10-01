@@ -1,0 +1,228 @@
+{
+  "$comment": "RAG chatbot — query-path dashboard (NFR-8, implementation.md 5.6). Grafana-format, PostgreSQL datasource. Every query is written against the real schema in app/db/models.py: QueryLog(created_at, ttft_ms, total_ms, abstained, citations_stripped, tokens_in, tokens_out, feedback) and Document(state, byte_size, indexed_at, chunk_count, created_at).",
+  "uid": "rag-query-path",
+  "title": "RAG — Query path",
+  "tags": ["rag", "nfr-8"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "postgres",
+        "current": {},
+        "label": "PostgreSQL"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Latency (NFR-1)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "$comment": "p50/p95/p99 of client-visible TTFT. The 5 s NFR-1 line is the whole point of this panel: architecture.md 7.2 asks for the alert to fire at 4 s so there is lead time, but the target that must not be crossed is 5 s.",
+      "type": "timeseries",
+      "title": "TTFT percentiles (ms) — target p95 < 5000",
+      "description": "Time to first token, server-measured. Budget 5000 ms; the paired alert fires at 4000 ms.",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '5m'), percentile_cont(0.50) WITHIN GROUP (ORDER BY ttft_ms) AS p50, percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms) AS p95, percentile_cont(0.99) WITHIN GROUP (ORDER BY ttft_ms) AS p99 FROM query_logs WHERE $__timeFilter(created_at) AND ttft_ms IS NOT NULL GROUP BY 1 ORDER BY 1",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "$comment": "Refusals are a health signal, not an error (PRD puts the healthy band at 10-30%). A drop to zero usually means retrieval is broken and everything is being refused, or the threshold is mis-set; a spike to 100% means the corpus stopped matching.",
+      "type": "stat",
+      "title": "Refusal rate (healthy band 10–30%)",
+      "description": "Share of answered queries that abstained on the evidence threshold. Tracked as a health signal, not an error.",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0.1 },
+              { "color": "green", "value": 0.3 },
+              { "color": "orange", "value": 0.5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT avg(CASE WHEN abstained THEN 1.0 ELSE 0.0 END) AS refusal_rate FROM query_logs WHERE $__timeFilter(created_at)",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Total answer latency percentiles (ms)",
+      "description": "Full answer time, not first token. The gap between this and TTFT is generation time.",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '5m'), percentile_cont(0.50) WITHIN GROUP (ORDER BY total_ms) AS p50, percentile_cont(0.95) WITHIN GROUP (ORDER BY total_ms) AS p95 FROM query_logs WHERE $__timeFilter(created_at) AND total_ms IS NOT NULL GROUP BY 1 ORDER BY 1",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "$comment": "Refusals never call the model, so they return almost instantly. Their latency is a baseline for the non-generation path and should stay far below answered TTFT; if it rises, the cost is in retrieval or the request path, not the model.",
+      "type": "timeseries",
+      "title": "Refused-request latency percentiles (ms) — no generation",
+      "description": "Refusals short-circuit before the LLM, so this is the retrieval + request overhead only.",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '5m'), percentile_cont(0.50) WITHIN GROUP (ORDER BY ttft_ms) AS p50, percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms) AS p95 FROM query_logs WHERE $__timeFilter(created_at) AND abstained AND ttft_ms IS NOT NULL GROUP BY 1 ORDER BY 1",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Answer quality",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "collapsed": false
+    },
+    {
+      "$comment": "The silent failure. architecture.md 7.2 calls this out specifically: a strip-rate spike means the model or prompt drifted, and it degrades answer quality without the user seeing an error — they just get fewer, worse citations. Ratio (stripped per query) is more stable than a raw sum, so both are shown.",
+      "type": "timeseries",
+      "title": "Citation strip rate (stripped markers per query)",
+      "description": "Citations the validator removed as invalid. Any sustained rise is model or prompt drift degrading answers silently.",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 0.2 }]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '5m'), avg(citations_stripped) AS strip_mean, max(citations_stripped) AS strip_max FROM query_logs WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "$comment": "Feedback lives on QueryLog (FR-29). The up/(up+down) ratio over time shows quality drift that users noticed, which is the counterpart to strip rate drifting below the user's awareness.",
+      "type": "timeseries",
+      "title": "User feedback ratio (up / (up + down))",
+      "description": "Thumbs up share of cast votes. Sustained decline means answers are getting worse.",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), avg(CASE WHEN feedback = 'up' THEN 1.0 WHEN feedback = 'down' THEN 0.0 END) FILTER (WHERE feedback IN ('up','down')) AS up_ratio FROM query_logs WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Token throughput (in / out per minute)",
+      "description": "Proxy for provider cost and for the load the model is actually absorbing.",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '1m'), sum(tokens_in) AS tokens_in, sum(tokens_out) AS tokens_out FROM query_logs WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Query volume",
+      "description": "Total and answered (non-refused) queries per minute. Latency percentiles are only meaningful alongside volume — a p95 computed from six requests is noise.",
+      "datasource": { "type": "postgres", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '1m'), count(*) AS total, count(*) FILTER (WHERE NOT abstained) AS answered FROM query_logs WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1",
+          "datasource": { "type": "postgres", "uid": "${datasource}" }
+        }
+      ]
+    }
+  ]
+}

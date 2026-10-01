@@ -1,0 +1,132 @@
+.admin-wrap {
+  padding: 1.25rem;
+  max-width: 70rem;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.admin-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.admin-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.admin-table th,
+.admin-table td {
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.admin-table th {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.admin-table td.numeric {
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-table tbody tr:hover {
+  background: var(--bg-subtle);
+}
+
+.filename {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.state-pill {
+  display: inline-block;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+
+.state-live {
+  color: var(--success);
+}
+
+.state-pending,
+.state-extracting,
+.state-chunking,
+.state-embedding,
+.state-indexing {
+  color: var(--warning);
+}
+
+.state-failed,
+.state-deleted {
+  color: var(--danger);
+}
+
+.state-disabled,
+.state-duplicate {
+  color: var(--text-muted);
+}
+
+.actions {
+  display: flex;
+  gap: 0.35rem;
+  justify-content: flex-end;
+}
+
+.actions button {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8rem;
+}
+
+.error-reason {
+  color: var(--danger);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.upload-form {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.upload-form input[type="file"] {
+  border: none;
+  padding: 0;
+  width: auto;
+  flex: 1;
+  min-width: 14rem;
+}
+
+.upload-result {
+  font-size: 0.85rem;
+  margin-top: 0.4rem;
+}
+
+.upload-ok {
+  color: var(--success);
+}
+
+.upload-bad {
+  color: var(--danger);
+}

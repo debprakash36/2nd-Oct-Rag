@@ -1,0 +1,104 @@
+.source-panel {
+  width: 22rem;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg-subtle);
+  overflow-y: auto;
+  padding: 0.75rem;
+}
+
+.source-panel h2 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin: 0 0 0.6rem;
+}
+
+.source-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.source-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.source-toggle {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: 0;
+  padding: 0.5rem 0.6rem;
+  background: transparent;
+}
+
+.source-toggle:hover {
+  background: var(--accent-soft);
+}
+
+.source-item[data-open="true"] .source-toggle {
+  border-bottom: 1px solid var(--border);
+}
+
+.source-index {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.source-name {
+  font-size: 0.85rem;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.source-location {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 0.15rem;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * The passage is corpus text: untrusted, and rendered as plain text via React.
+ * FR-22 forbids rendering model or document output as markup, so there is
+ * deliberately no `dangerouslySetInnerHTML` anywhere in this component.
+ */
+.source-passage {
+  margin: 0;
+  padding: 0.6rem;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.source-status {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  padding: 0.5rem 0.6rem;
+}
+
+.source-status.error {
+  color: var(--danger);
+}
+
+.citation-warning {
+  font-size: 0.8rem;
+  color: var(--warning);
+  margin: 0.35rem 0 0;
+}

@@ -1,0 +1,47 @@
+Mutual Fund FAQs (Facts-Only Q&A)
+Milestone brief
+Build a small FAQ assistant that answers facts about mutual fund schemes—e.g., expense ratio, exit load, minimum SIP, lock-in (ELSS), riskometer, benchmark, and how to download statements—using only official public pages. Every answer must include one source link. No advice.
+Who this helps
+Retail users comparing schemes; support/content teams answering repetitive MF questions.
+What you must build
+Scope your corpus: Pick one AMC and 3–5 schemes under it (e.g., one large-cap, one flexi-cap, one ELSS).
+Collect the  public pages as mentioned below from AMC/SEBI/AMFI (factsheets, KIM/SID, scheme FAQs, fee/charges pages, riskometer/benchmark notes, statement/tax-doc guides).
+https://groww.in/mutual-funds/amc/hdfc-mutual-funds 
+https://groww.in/mutual-funds/hdfc-large-cap-fund-direct-growth 
+https://groww.in/mutual-funds/hdfc-flexi-cap-fund-direct-growth 
+https://groww.in/mutual-funds/hdfc-elss-tax-saver-fund-direct-plan-growth 
+https://groww.in/mutual-funds/hdfc-mid-cap-fund-direct-growth 
+https://groww.in/mutual-funds/hdfc-focused-fund-direct-growth 
+https://groww.in/mutual-funds/category/best-flexi-cap-mutual-funds
+https://groww.in/mutual-funds/category/best-flexi-cap-mutual-fund
+https://groww.in/mutual-funds/category/best-large-cap-mutual-funds 
+https://groww.in/mutual-funds/category/best-elss-mutual-funds 
+FAQ assistant (working prototype):
+Answers factual queries only (e.g., “Expense ratio of ?”, “ELSS lock-in?”, “Minimum SIP?”, “Exit load?”, “Riskometer/benchmark?”, “How to download capital-gains statement?”).
+Shows one clear citation link in every answer.
+Refuses opinionated/portfolio questions (e.g., “Should I buy/sell?”) with a polite, facts-only message and a relevant educational link.
+Tiny UI: welcome line + 3 example questions and a note: “Facts-only. No investment advice.”
+Key constraints
+Public sources only. No screenshots of the app back-end; no third-party blogs as sources.
+No PII. Do not accept/store PAN, Aadhaar, account numbers, OTPs, emails, or phone numbers.
+No performance claims. Don’t compute/compare returns; link to the official factsheet if asked.
+Clarity & transparency. Keep answers ≤3 sentences; add “Last updated from sources: ”.
+What to submit (deliverables)
+Working prototype link (app/notebook) or a ≤3-min demo video if hosting isn’t possible.
+Source list (CSV/MD) of the 10 URLs you used.
+README with setup steps, scope (AMC + schemes), and known limits.
+Sample Q&A file (5–10 queries with the assistant’s answers + links).
+Disclaimer snippet used in your UI (facts-only, no advice).
+
+
+
+
+End output - RAG Chatbot
+
+
+Each stage is different and when we create architecture we want to follow all the stages on RAG ( data ingestion + Data retrieval)
+Loading→ Chuning→Embedding→ String vector data
+Embedding Models→ sentence-transformers/all-MiniLM-L6-v2
+Chunking Strategy→ Ask cursor to decide the chunking strategy based on the data
+VectorDB- ChromaDB
+We are building a RAG chatbot

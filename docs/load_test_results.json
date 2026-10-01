@@ -1,0 +1,47 @@
+{
+  "vus": 50,
+  "observed_peak_concurrency": 52,
+  "requests": 100,
+  "ok": 100,
+  "failed": 0,
+  "truncated": 0,
+  "duration_s": 4.5,
+  "throughput_rps": 22.23,
+  "client_ttft_ms": {
+    "p50": 935.6,
+    "p95": 1928.9,
+    "p99": 2053.6,
+    "mean": 1023.4,
+    "max": 2153.0,
+    "n": 100
+  },
+  "server_ttft_ms": {
+    "p50": 743.0,
+    "p95": 1529.1,
+    "n": 100
+  },
+  "transport_gap_ms": {
+    "p50": 185.5,
+    "p95": 441.1,
+    "n": 100
+  },
+  "full_answer_ms": {
+    "p50": 1691.9,
+    "p95": 3876.2,
+    "max": 4423.8
+  },
+  "answered_ttft_ms": {
+    "p50": 928.8,
+    "p95": 1952.7,
+    "max": 2153.0,
+    "n": 70
+  },
+  "refused_ttft_ms": {
+    "p50": 944.2,
+    "p95": 1857.9,
+    "n": 30
+  },
+  "abstained": 30,
+  "sources_total": 570,
+  "failures": {}
+}
