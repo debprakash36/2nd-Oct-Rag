@@ -115,11 +115,27 @@ class Settings(BaseSettings):
     retrieval_rerank_k: int = Field(default=40, gt=0)
     retrieval_top_k: int = Field(default=8, gt=0)
     # Measured, not guessed: `eval/run_eval.py --sweep` selects the value that
-    # holds recall@10 >= 0.85 and a 10-30% refusal rate simultaneously. 0.10 is
-    # the highest threshold that does both on the current eval set (recall@10
-    # 0.892, refusal 21.0%); 0.15 loses recall. Re-measure after any change to
-    # the corpus, the reranker, or the embeddings -- it is a property of those,
-    # not a constant.
+    # holds recall@10 >= 0.85 and a 10-30% refusal rate simultaneously.
+    #
+    # **No threshold currently satisfies both.** On real embeddings
+    # (sentence-transformers/all-MiniLM-L6-v2, 200 questions) recall@10 peaks at
+    # 0.8446 at threshold 0.00-0.05, against the 0.85 target -- short by 0.0054,
+    # about one question -- while refusal only enters the 10-30% band from 0.05
+    # upward. At 0.10 the figures are recall@10 0.8378, refusal 21.5%; at 0.15
+    # recall falls further to 0.8311 and the band is still met; refusal leaves the
+    # band at 0.20 (34.5%). `docs/eval/threshold_history.jsonl` records
+    # `recommended: null` and `joint_count: 0` for that sweep.
+    #
+    # The value stays at 0.10 because it is the best refusal-band point that is
+    # not simply "return nothing", not because it satisfies both targets --
+    # it does not, and claiming otherwise was the bug in this comment before.
+    #
+    # An earlier revision of this comment justified 0.10 with "recall@10 0.892,
+    # refusal 21.0%". Those numbers came from the fake-embed-v1 provider, a
+    # SHA-256 hash bucket rather than a sentence encoder, and were not a
+    # measurement of retrieval quality. Re-measure after any change to the
+    # corpus, the reranker, or the embeddings -- it is a property of those, not a
+    # constant.
     retrieval_threshold: float = Field(default=0.10, ge=0.0, le=1.0)
     retrieval_max_context_tokens: int = Field(default=4000, gt=0)
     # Which vector store backend serves the vector half of hybrid retrieval.
