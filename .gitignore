@@ -47,6 +47,10 @@ samples/
 *_backup
 *.backup
 *.db-*
+# `rag_reembed.db` is the staging copy `scripts/reembed_chunks.py` writes before
+# rag.db is replaced. `*.db` already covers it; listed so the intent is obvious
+# rather than accidental.
+rag_reembed.db
 .env
 
 # Corpus verification output
