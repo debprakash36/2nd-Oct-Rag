@@ -159,10 +159,20 @@ Verified consequence: with the 11 rows removed (on a **copy**; `rag.db` was not
 modified), the full 200-question eval passes:
 
 ```
-recall@10   0.892  (target >= 0.85 PASS)
-refusal     21.0%  (healthy band 10-30%) PASS
-latency     mean 57.6 ms, p95 70.9 ms
+ fake embeddings — see caveat below, these are not gate results
+ recall@10   0.892  (target >= 0.85 NOT ESTABLISHED)
+ refusal     21.0%  (healthy band 10-30%)
+ latency     mean 57.6 ms, p95 70.9 ms
 ```
+
+> **The 0.892 here is not a gate result.** This run predates the re-embed, so it used
+> `FakeEmbeddingProvider` — a SHA-256 hash bucket, not a sentence encoder. With
+> `all-MiniLM-L6-v2` on the same corpus the figure is **0.8378**, below the 0.85 target;
+> **0.8378 is the first real baseline**, and the gate is **to be set from pilot traffic**.
+> The eval set is lexically biased (templates quote document titles and scopes
+> verbatim), which flatters a bag-of-words vectoriser. These numbers remain valid as
+> evidence that the 11 rows were irrelevant to scoring — which is what this section
+> needed them for — and not as evidence about retrieval quality.
 
 **Outcome — BLOCKED, not fixed.** The leak that caused this is closed, so no *new*
 64-dim rows can appear. The 11 existing rows still abort every query against

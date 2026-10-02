@@ -1,5 +1,22 @@
 # Retrieval and Generation Eval Results
 
+> ## ⚠️ Every number in this file is a placeholder, not a gate
+>
+> The headline `recall@10 = 0.892` was measured with **`FakeEmbeddingProvider`** —
+> a SHA-256 hash bucket, not a sentence encoder. It is **not** a valid exit gate and
+> must not be cited as one.
+>
+> **What the same corpus measures with real embeddings:** `0.8378`, which does *not*
+> clear the 0.85 target. The first real-embedding baseline is 0.8378.
+>
+> **The eval set is lexically biased.** Its templates quote document titles and
+> scopes verbatim, so a bag-of-words hashing vectoriser scores well on it and a
+> genuine semantic model is not rewarded for the thing it is actually good at. This
+> benchmark cannot rank embedding models in either direction.
+>
+> **The real gate is to be set from pilot traffic.** It is deliberately left unset
+> rather than replaced with a fresh number from the same biased set.
+
 Evidence for the Phase 2 exit gate (`implementation.md` §4), the four claims in
 `architecture.md` §10, and the Phase 3 exit gate (`implementation.md` §5). Method
 and caveats live in `docs/eval_guide.md`; this file holds the measurements.
@@ -20,8 +37,15 @@ in `eval_guide.md` §6 applies to every number below.
 
 ## 1. Exit gate
 
-**Recall@10 ≥ 0.85: PASS (0.892).** Threshold calibrated at **0.10**, giving a
-**21.0%** refusal rate, inside the 10–30% band.
+**Recall@10 ≥ 0.85: NOT ESTABLISHED.** The `0.892` quoted throughout this file was
+produced by `FakeEmbeddingProvider` and is withdrawn as a gate result. On real
+embeddings the same 113-document corpus scores **0.8378**, below the 0.85 target.
+The gate is **to be set from pilot traffic** — no substitute number is offered here,
+because any number drawn from this lexically biased set would repeat the error.
+
+All figures below remain useful as *offline-pipeline* measurements — they exercise
+the hybrid stages, the reranker and the abstain path. They are not evidence about
+retrieval quality.
 
 ```
 === full (hybrid + rerank, threshold 0.10) ===
@@ -29,7 +53,7 @@ questions        200
 correct          174 (87.0%)
 recall@1         0.514
 recall@5         0.892
-recall@10        0.892  (target >= 0.85 PASS)
+recall@10        0.892  (fake embeddings; target >= 0.85 NOT ESTABLISHED)
 MRR@10           0.703
 recall@context   0.892
 refusal rate     21.0%  (healthy band 10%-30%)
@@ -98,6 +122,10 @@ Keyword stage disabled, threshold 0.0 so the comparison is of rankings.
 | Hybrid (vector + keyword) | **0.892** | 0.703 | **93.3%** |
 | Vector only | 0.642 | 0.497 | 6.7% |
 
+*Fake embeddings.* The 0.148 gap between hybrid and vector-only is the honest part of
+this table: the keyword stage is doing most of the work, which is consistent with the
+lexical bias of the eval set and inconsistent with these being semantic results.
+
 **Delta = +0.250 recall@10.**
 
 The identifier column is the decisive evidence. Exact-identifier lookup collapses
@@ -151,8 +179,11 @@ for citation.
 
 ## 5. §10 check 4 — the threshold achieves its band
 
+**This table is `FakeEmbeddingProvider` output.** Its "yes/yes" columns are not a
+real result and the conclusion drawn from them below is withdrawn.
+
 ```
- looking for recall@10 >= 0.85 AND refusal rate in 10%-30%
+ fake embeddings — looking for recall@10 >= 0.85 AND refusal rate in 10%-30%
  threshold  recall@10   refusal   R@10 OK   band OK
       0.00      0.892     0.0%       yes        no
       0.05      0.892    20.5%       yes       yes
@@ -167,17 +198,17 @@ for citation.
       0.50      0.068    94.5%        no        no
 ```
 
-Two thresholds satisfy both targets: **0.05** and **0.10**.
+**With real embeddings, no threshold satisfies both targets.** On the current
+124-document `rag.db`, recall@10 peaks at **0.8446** — short of 0.85 — while the
+refusal band is only reachable from 0.05 upward. The two constraints never overlap,
+which `threshold_history.jsonl` records as `recommended: null`, `joint_count: 0`.
 
-**Chosen: 0.10**, and it is the higher of the two. `0.15` drops recall below the
-gate, so `0.10` is the most conservative cutoff that holds it, which minimizes
-the number of low-confidence passages admitted. That 0.05 and 0.10 are identical
-on recall but differ on refusal means the score distribution has a step there:
-questions either clear 0.10 comfortably or fall below 0.05.
+Chosen: 0.10, unchanged. With no threshold satisfying both targets, 0.10 is retained
+as the best refusal-band point that is not simply "return nothing" — it is not a
+calibrated optimum and does not meet the recall target.
 
-The knee at `0.15 → 0.20` (recall 0.838 → 0.804, refusal 25.0% → 35.5%) is where
-the target pair stops being satisfiable from either side. The band is reachable,
-so — unlike the superseded run — this is **not** a PRD-level incompatibility.
+The knee at `0.15 → 0.20` above reflects how the *fake* score distribution is shaped
+and should not be read as a property of the retriever.
 
 ---
 

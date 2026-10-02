@@ -797,17 +797,32 @@ recall-0.89 does not satisfy §3.3, and picking it would reintroduce the near-ze
 refusal rate §8.2 calls "the most damaging failure mode here".
 
 **Baseline snapshot, recorded 2026-10-01.** Against `rag_eval.db` (297 chunks,
-113 documents, fake embeddings), threshold **0.05** is the only recommended point:
-recall@10 0.892, refusal 20.5% — inside §3.3's 18–25% band. Threshold 0.10 ties on
-recall at 21.0% refusal. Above 0.15 both targets fail at once: 0.20 drops recall to 0.804
-and refusal rises to 35.5%, well outside the band. So the answer to "should we tune the
-threshold?" for this corpus is **no** — 0.05 and 0.10 already satisfy both targets, and
-the binding constraint above 0.15 is refusal rate, not recall. The sweep on a corpus of
-113 documents from `data/` is an evaluation-harness artifact and is not a basis for
-promoting a production threshold; §4.4 is explicit that this remains a PRD-level
-conversation rather than something to tune around. What the run does establish is that
-the recording works and that a second identical run reads as *within noise* rather than
-as progress.
+113 documents), threshold **0.05** was recorded as the only recommended point:
+recall@10 0.892, refusal 20.5% — inside §3.3's 18–25% band. Threshold 0.10 tied on
+recall at 21.0% refusal. Above 0.15 both targets failed at once: 0.20 dropped recall to
+0.804 and refusal rose to 35.5%.
+
+> **Superseded 2026-10-02 — those figures were fake embeddings.** The snapshot above was
+> taken with `FakeEmbeddingProvider`, a SHA-256 hash bucket, not a sentence encoder.
+> It is **not** a valid gate. Re-run on the identical 113-document corpus with
+> `sentence-transformers/all-MiniLM-L6-v2`, recall@10 is **0.8378**, below the 0.85
+> target — **0.8378 is the first real baseline.** On the current 124-document `rag.db`
+> it peaks at 0.8446. **No threshold satisfies both targets**, and the gate itself is
+> **to be set from pilot traffic** rather than restated from this corpus.
+>
+> The eval set is also lexically biased: templates quote document titles and scopes
+> verbatim, which flatters a bag-of-words vectoriser and understates a real encoder.
+> The numbers remain valid as measurements of the *offline pipeline* — stages wired,
+> reranker attached, abstain path exercised — and are not evidence about retrieval
+> quality.
+
+**Should the threshold be tuned? No — and not for the reason originally given.** The
+earlier reading was that 0.05 and 0.10 already satisfied both targets, making the
+constraint above 0.15 refusal rate rather than recall. That conclusion rested entirely on
+hash vectors. On real embeddings the recall target is missed at every threshold tested,
+so the honest answer is that the target pair is not satisfiable by threshold choice at
+all. What the 2026-10-01 run does still establish is that the recording works and that
+a second identical run reads as *within noise* rather than as progress.
 
 **`content_gaps.py` — classify before acting.** §8.1 is explicit that a content gap
 and a retrieval gap need different fixes and that an agent which "improves retrieval"

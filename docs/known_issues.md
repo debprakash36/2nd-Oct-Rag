@@ -188,7 +188,10 @@ Nothing rejects `fake` when `ENVIRONMENT=production`. A deploy that forgets
 `EMBEDDING_PROVIDER` and `GENERATION_PROVIDER` starts, answers from fixtures, and
 produces quality numbers that look real. The recorded baseline recall of 0.892 is from
 fake embeddings on a 113-document synthetic corpus and is **not** a production-quality
-measurement.
+measurement — on the same corpus with `all-MiniLM-L6-v2` it is **0.8378**, still below
+the 0.85 target. **0.8378 is the first real baseline**; the gate itself is **to be set
+from pilot traffic**, since this eval set is lexically biased (templates quote document
+titles and scopes verbatim) and flatters a bag-of-words vectoriser.
 
 `validate_production()` already blocks sqlite in production. Rejecting fake providers
 there is the same shape of check and would close this.
