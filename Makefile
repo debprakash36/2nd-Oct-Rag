@@ -47,6 +47,18 @@ corpus:
 ingest:
 	$(PY) scripts/ingest_corpus.py --dir ./samples --stats
 
+# Phase 6 activities (see docs/implementation.md 8.1a).
+# Each reads the local corpus and the query log; none of them changes a threshold
+# in config for you. retune-threshold only appends to the history file.
+retune-threshold:
+	$(PY) scripts/retune_threshold.py
+
+content-gaps:
+	$(PY) scripts/content_gaps.py
+
+pilot-metrics:
+	$(PY) scripts/pilot_metrics.py
+
 migrate:
 	$(PY) -m alembic upgrade head
 

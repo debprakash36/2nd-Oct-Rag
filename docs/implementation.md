@@ -751,13 +751,62 @@ No new features. Three activities:
 
 ### 8.1a Tooling for these activities
 
-Activity 2 is the only one that is *buildable* — activities 1 and 3 need real
-traffic, which a pilot has not yet produced. Two scripts cover the work:
+Activities 1 and 3 need real traffic to produce real numbers, and activity 2 needs the
+traffic log to have anything in it. What *is* buildable is the machinery around them —
+including the harness that records a threshold sweep, so that "re-sweep monthly and
+record the delta" is a command rather than a reminder. Three scripts cover the work:
 
 | Script | Covers | Notes |
 | --- | --- | --- |
+| `scripts/retune_threshold.py` | Activity 1 | Re-sweeps, appends a snapshot, reports the delta against the last one |
 | `scripts/content_gaps.py` | Activity 2, and FR-30 (deferred from 4.9) | Classifies a failed query before you act on it |
 | `scripts/pilot_metrics.py` | Activity 3 | Reports the §8.2 gate as PASS / FAIL / **UNMEASURED** |
+
+**`retune_threshold.py` — the part that makes "record the delta" survivable.** Activity 1
+is the only instruction in §8.1 with a recurring obligation attached, and a recurring
+obligation with no record is the kind that quietly stops happening. The tool re-sweeps
+via `eval/run_eval.py` — the same code path every other quality number comes from — and
+appends each run to `docs/eval/threshold_history.jsonl` with the Git commit, the corpus
+chunk/document counts, the embedding model, the sample size, a fingerprint of the
+questions actually evaluated, and the recommendation.
+
+The delta is the point, so it is deliberately hard to make it say something untrue. A
+sweep run over 40 questions is compared against a 200-question sweep only if both the
+sample size *and* the question fingerprint match; otherwise it prints the current
+values and states that no movement is claimed. Both halves of that guard were written
+after the unguarded version shipped a confident, wrong number: it recorded a 40-question
+run as `n=200` (counting the dataset file instead of the evaluated slice), so the guard
+could not fire, and it reported +0.059 recall@10 as an `IMPROVED`. Small movements are
+labelled *within noise* rather than `IMPROVED` — one question in 200 is 0.005 of
+recall@10, which is smaller than the tool's `NOISE_FLOOR`. Regressions are attributed
+where the record allows: corpus changed → an ingestion finding; commit changed with the
+corpus fixed → a code regression; neither → "the numbers moved for no traceable reason",
+which is itself the finding.
+
+```bash
+python scripts/retune_threshold.py                    # sweep, record, report the delta
+python scripts/retune_threshold.py --thresholds 0.05,0.10,0.15
+python scripts/retune_threshold.py --no-record        # inspect without appending
+python scripts/retune_threshold.py --history          # read the trend
+```
+
+The recommendation is the highest-recall threshold that also satisfies the refusal band,
+not simply the best recall in the table — a threshold that answers everything at 0.0
+recall-0.89 does not satisfy §3.3, and picking it would reintroduce the near-zero
+refusal rate §8.2 calls "the most damaging failure mode here".
+
+**Baseline snapshot, recorded 2026-10-01.** Against `rag_eval.db` (297 chunks,
+113 documents, fake embeddings), threshold **0.05** is the only recommended point:
+recall@10 0.892, refusal 20.5% — inside §3.3's 18–25% band. Threshold 0.10 ties on
+recall at 21.0% refusal. Above 0.15 both targets fail at once: 0.20 drops recall to 0.804
+and refusal rises to 35.5%, well outside the band. So the answer to "should we tune the
+threshold?" for this corpus is **no** — 0.05 and 0.10 already satisfy both targets, and
+the binding constraint above 0.15 is refusal rate, not recall. The sweep on a corpus of
+113 documents from `data/` is an evaluation-harness artifact and is not a basis for
+promoting a production threshold; §4.4 is explicit that this remains a PRD-level
+conversation rather than something to tune around. What the run does establish is that
+the recording works and that a second identical run reads as *within noise* rather than
+as progress.
 
 **`content_gaps.py` — classify before acting.** §8.1 is explicit that a content gap
 and a retrieval gap need different fixes and that an agent which "improves retrieval"
@@ -797,8 +846,11 @@ python scripts/pilot_metrics.py --min-samples 30 --json
 **Current state: all four traffic metrics are UNMEASURED.** `query_logs` holds 6 rows
 across 2 distinct queries — local test residue, not a pilot. The exit gate for this
 phase is genuinely outstanding and cannot be closed by tooling; it needs a real
-audience. The two eval-set metrics (citation correctness, groundedness) are computed
-by `eval/run_eval.py` and are not re-run by these scripts.
+audience. Activity 1 is likewise outstanding as a *monthly* practice: the harness and
+its history now exist and a baseline snapshot is recorded, but one snapshot is not a
+trend, and the distribution §8.1 asks the re-sweep to correct for is real traffic's, not
+the eval set's. The two eval-set metrics (citation correctness, groundedness) are
+computed by `eval/run_eval.py` and are not re-run by these scripts.
 
 ### 8.2 Pilot gate
 
