@@ -15,13 +15,18 @@ from __future__ import annotations
 
 import json
 import math
+from typing import ClassVar
 
 import httpx
 import pytest
 
 from app.core.errors import EmbeddingError, GenerationError
 from app.providers.base import EmbeddingProvider, GenerationProvider
-from app.providers.embedding import FakeEmbeddingProvider, HuggingFaceEmbeddingProvider
+from app.providers.embedding import (
+    MAX_BACKOFF_SECONDS,
+    FakeEmbeddingProvider,
+    HuggingFaceEmbeddingProvider,
+)
 from app.providers.generation import FakeGenerationProvider, GroqGenerationProvider
 
 DIM = 8
@@ -115,6 +120,221 @@ class TestHuggingFaceEndpointShape:
         assert Settings().hf_inference_url == "https://router.huggingface.co/hf-inference"
 
 
+class _ScriptedTransport:
+    """Mock transport replaying a scripted list of attempts, counting calls.
+
+    Returns `(provider, sleeps, calls)`. The sleep recorder is returned rather than
+    stashed on the test so a test that builds two providers (to compare jitter)
+    does not overwrite its own first recorder.
+    """
+
+    def __init__(self, attempts: list[object], **kwargs: object):
+        self.sleeps: list[float] = []
+        self.calls = 0
+        defaults: dict[str, object] = dict(
+            token="hf_secret", base_url="https://example.test", model="m",
+            dim=DIM, timeout=1.0, batch_size=4,
+            sleep=self.sleeps.append, jitter=lambda: 0.0,
+        )
+        defaults.update(kwargs)
+        self.provider = HuggingFaceEmbeddingProvider(**defaults)  # type: ignore[arg-type]
+
+        def fake_post(url, *, json, headers, timeout):
+            index = self.calls
+            self.calls += 1
+            if index >= len(self.attempts):
+                raise AssertionError(
+                    f"attempt {index + 1} was not scripted (scripted {len(self.attempts)})"
+                )
+            item = self.attempts[index]
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        self.transport = fake_post
+        self.attempts = attempts
+        self.provider._post = fake_post  # type: ignore[attr-defined]
+
+
+class TestHuggingFaceEmbeddingRetry:
+    """Bounded retry with exponential backoff and jitter.
+
+    A full threshold sweep is ~1400 sequential calls against the hosted API and
+    trips its rate limit; an earlier sweep of exactly that shape died on a
+    `ReadTimeout` after hundreds of successful batches. Every case here runs
+    against a mock transport, so the suite is offline and deterministic.
+    """
+
+    OK: ClassVar[list[list[float]]] = [[1.0] + [0.0] * (DIM - 1)]
+
+    def _script(self, attempts, **kwargs):
+        t = _ScriptedTransport(attempts, **kwargs)
+        return t.provider, t
+
+    def _ok(self):
+        return httpx.Response(200, json=self.OK)
+
+    def _down(self, times: int):
+        return [httpx.Response(503, text="down")] * times
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            httpx.ReadTimeout("slow"),
+            httpx.ConnectTimeout("slow"),
+            httpx.ConnectError("refused"),
+            httpx.ReadError("reset"),
+            httpx.Response(429, json={"error": "rate limited"}),
+            httpx.Response(500, text="boom"),
+            httpx.Response(502, text="bad gateway"),
+            httpx.Response(503, text="unavailable"),
+            httpx.Response(504, text="gateway timeout"),
+        ],
+    )
+    def test_transient_failure_then_success_returns_the_vector(self, failure):
+        provider, t = self._script([failure, self._ok()])
+        vectors = provider.embed(["a"], model="m")
+
+        assert len(vectors) == 1 and len(vectors[0]) == DIM
+        assert t.calls == 2, "one retry, then success"
+        assert len(t.sleeps) == 1, "exactly one backoff, not one per failure"
+
+    @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+    def test_deterministic_client_error_is_not_retried(self, status):
+        """A bad token or model name returns the same on every retry.
+
+        Retrying only adds three backoffs in front of the message that actually
+        diagnoses it.
+        """
+        provider, t = self._script([httpx.Response(status, text="nope")])
+        with pytest.raises(EmbeddingError, match=str(status)):
+            provider.embed(["a"], model="m")
+
+        assert t.calls == 1, "must fail on the first attempt"
+        assert t.sleeps == [], "no backoff for a deterministic failure"
+
+    def test_attempts_are_bounded(self):
+        provider, t = self._script(self._down(10), max_attempts=4)
+        with pytest.raises(EmbeddingError, match="after 4 attempts"):
+            provider.embed(["a"], model="m")
+
+        assert t.calls == 4, "exactly max_attempts, no unbounded loop"
+        assert len(t.sleeps) == 3, "a backoff between attempts, not after the last"
+
+    def test_backoff_doubles_and_is_capped_at_the_maximum(self):
+        # jitter=1.0 pins the schedule to the ceiling of each step, which is what
+        # the cap assertion below needs to observe.
+        provider, t = self._script(self._down(10), max_attempts=8, jitter=lambda: 1.0)
+        with pytest.raises(EmbeddingError):
+            provider.embed(["a"], model="m")
+
+        # 0.5, 1, 2, 4 then held: doubling stops at MAX_BACKOFF_SECONDS rather
+        # than running away, which matters because the exponent is per attempt.
+        cap = MAX_BACKOFF_SECONDS
+        assert t.sleeps == [0.5, 1.0, 2.0, 4.0, cap, cap, cap]
+        assert max(t.sleeps) == cap, "the cap is reached and held"
+
+    def test_backoff_floor_is_half_the_ceiling(self):
+        provider, t = self._script(self._down(10), max_attempts=3, jitter=lambda: 0.0)
+        with pytest.raises(EmbeddingError):
+            provider.embed(["a"], model="m")
+
+        assert t.sleeps == [0.25, 0.5], "equal jitter's floor is half of each ceiling"
+
+    def test_jitter_spreads_retries_between_floor_and_ceiling(self):
+        """Two providers on the same failure must not back off in lockstep.
+
+        This is the point of jitter: the failure mode is a provider-wide rate
+        limit, so callers that retry on identical delays arrive together and
+        re-trip it.
+        """
+        _, high = self._script(self._down(10), max_attempts=2, jitter=lambda: 1.0)
+        with pytest.raises(EmbeddingError):
+            high.provider.embed(["a"], model="m")
+
+        _, low = self._script(self._down(10), max_attempts=2, jitter=lambda: 0.0)
+        with pytest.raises(EmbeddingError):
+            low.provider.embed(["a"], model="m")
+
+        assert high.sleeps == [0.5] and low.sleeps == [0.25]
+        assert high.sleeps != low.sleeps, "the delay is randomised, not fixed"
+
+    def test_default_jitter_is_actually_random(self):
+        """The production default must spread retries, not pin them.
+
+        Every other test here injects a fixed `jitter` to assert the formula, so
+        nothing would catch the default being wired to a constant. This builds the
+        provider the way production does -- only `sleep` is replaced, to avoid
+        really waiting -- and checks the delays genuinely differ and stay inside
+        the per-step bounds.
+        """
+        sleeps: list[float] = []
+        scripted = _ScriptedTransport(self._down(10))
+        provider = HuggingFaceEmbeddingProvider(
+            token="hf_secret", base_url="https://example.test", model="m",
+            dim=DIM, timeout=1.0, batch_size=4, max_attempts=8,
+            sleep=sleeps.append,
+        )
+        provider._post = scripted.transport  # type: ignore[attr-defined]
+
+        with pytest.raises(EmbeddingError):
+            provider.embed(["a"], model="m")
+
+        ceilings = [0.5, 1.0, 2.0, 4.0, 8.0, 8.0, 8.0]
+        assert len(sleeps) == len(ceilings)
+        for delay, ceiling in zip(sleeps, ceilings, strict=True):
+            assert 0.5 * ceiling <= delay <= ceiling, "equal jitter stays in bounds"
+        # The last three attempts share one ceiling, so they differ only if the
+        # RNG is live. Comparing the whole list would pass on a constant default,
+        # because the doubling alone already makes the values distinct.
+        capped = sleeps[4:]
+        assert len(set(capped)) == len(capped), "the default must randomise the delay"
+
+    def test_error_never_leaks_the_token_or_body(self):
+        provider, _ = self._script(self._down(4))
+        with pytest.raises(EmbeddingError) as exc:
+            provider.embed(["a"], model="m")
+
+        message = str(exc.value)
+        assert "503" in message
+        assert "hf_secret" not in message, "NFR-5: the token must not be echoed"
+        assert "down" not in message, "NFR-5: the body must not be echoed"
+
+    def test_success_on_first_attempt_never_sleeps(self):
+        provider, t = self._script([self._ok()])
+        provider.embed(["a"], model="m")
+
+        assert t.calls == 1
+        assert t.sleeps == [], "a healthy request must not pay any backoff"
+
+    def test_retry_is_per_batch_not_per_request(self):
+        """A later batch failing must not re-send batches that already succeeded."""
+        provider, t = self._script(
+            [self._ok(), self._ok(), httpx.Response(503, text="down"), self._ok()],
+            batch_size=1,
+        )
+        vectors = provider.embed(["a", "b", "c"], model="m")
+
+        assert len(vectors) == 3, "the whole request still succeeds"
+        assert t.calls == 4, "the first two batches were not re-sent"
+
+    def test_max_attempts_of_one_disables_retry(self):
+        provider, t = self._script(self._down(4), max_attempts=1)
+        with pytest.raises(EmbeddingError, match="after 1 attempt"):
+            provider.embed(["a"], model="m")
+
+        assert t.calls == 1 and t.sleeps == []
+
+    def test_malformed_body_is_not_retried(self):
+        """A 200 with the wrong shape is our bug or the model's, not a blip."""
+        provider, t = self._script([httpx.Response(200, json=[[0.0] * (DIM + 1)])])
+        with pytest.raises(EmbeddingError, match="dimension mismatch"):
+            provider.embed(["a"], model="m")
+
+        assert t.calls == 1
+        assert t.sleeps == []
+
+
 class TestHuggingFaceEmbedding:
     def _provider(self, handler, **kwargs) -> HuggingFaceEmbeddingProvider:
         """A provider wired to a mock transport.
@@ -127,6 +347,11 @@ class TestHuggingFaceEmbedding:
         defaults = dict(
             token="hf_secret", base_url="https://example.test", model="m",
             dim=DIM, timeout=1.0, batch_size=4,
+            # Retry uses a real sleep and real randomness by default. Neutralised
+            # for every test here so a retrying case costs no wall-clock time and
+            # asserts the same thing on every run; the retry tests that care
+            # about the schedule pass their own recorder.
+            sleep=lambda _seconds: None, jitter=lambda: 0.0,
         )
         defaults.update(kwargs)
         provider = HuggingFaceEmbeddingProvider(**defaults)  # type: ignore[arg-type]
@@ -246,6 +471,7 @@ class TestHuggingFaceEmbedding:
         provider._post = boom  # type: ignore[attr-defined]
         with pytest.raises(EmbeddingError, match="ConnectError"):
             provider.embed(["a"], model="m")
+
     def test_empty_input_short_circuits(self):
         def boom(*a, **k):  # pragma: no cover - must not be called
             raise AssertionError("should not call the API for empty input")

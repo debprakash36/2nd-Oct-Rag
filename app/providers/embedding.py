@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Sequence
+import random
+import time
+from collections.abc import Callable, Sequence
 from functools import lru_cache
 
 import httpx
@@ -20,6 +22,28 @@ from app.core.logging import get_logger
 from app.providers.base import EmbeddingProvider, RerankerProvider, ScoredDoc
 
 log = get_logger("app.providers")
+
+#: Total attempts per batch, including the first. Bounded because this sits inside
+#: a user-facing request: four attempts at a 0.5/1/2 s backoff is ~3.5 s of added
+#: latency in the worst case, which the 5 s TTFT budget (NFR-1) can absorb, while
+#: an unbounded retry would turn a provider outage into a hung request.
+DEFAULT_MAX_ATTEMPTS = 4
+
+#: First backoff step, doubled each attempt and capped. The cap matters because
+#: the exponent is applied per attempt: without it a larger attempt count walks
+#: into a multi-minute stall.
+BASE_BACKOFF_SECONDS = 0.5
+MAX_BACKOFF_SECONDS = 8.0
+
+#: Statuses worth retrying. 429 is the hosted API's rate limit and the reason this
+#: exists at all -- a sweep is ~1400 sequential calls and trips it. 5xx is a
+#: provider-side fault that a retry usually clears.
+#:
+#: Every other 4xx is deliberately excluded. A 401 or 403 is a bad token and a 404
+#: a bad model name: both return identically on every retry, so retrying them only
+#: delays the real diagnosis by three backoffs. Failing fast keeps the message --
+#: "check the model name and HF_TOKEN" -- the first thing an operator sees.
+RETRYABLE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
 class FakeEmbeddingProvider:
@@ -91,6 +115,9 @@ class HuggingFaceEmbeddingProvider:
         dim: int,
         timeout: float,
         batch_size: int,
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        sleep: Callable[[float], None] = time.sleep,
+        jitter: Callable[[], float] = random.random,
     ) -> None:
         self._token = token
         # The route is `/{models}/{model}/pipeline/feature-extraction` -- note the
@@ -108,6 +135,11 @@ class HuggingFaceEmbeddingProvider:
         self._dim = dim
         self._timeout = timeout
         self._batch_size = batch_size
+        self._max_attempts = max(1, max_attempts)
+        # Injected rather than called directly so tests can assert on the backoff
+        # schedule without actually sleeping through it.
+        self._sleep = sleep
+        self._jitter = jitter
         # Module-level `httpx` so tests can swap this single seam rather than
         # patching the library globally. The default is the real `httpx.post`; a
         # test passes a stub. Injected rather than monkeypatched because the
@@ -128,30 +160,74 @@ class HuggingFaceEmbeddingProvider:
         )
         return vectors
 
+    def _backoff(self, attempt: int) -> float:
+        """Seconds to wait before `attempt`+1, jittered.
+
+        Equal jitter: half the ceiling is fixed and the other half is random, so
+        the delay never collapses toward zero (which would defeat the backoff) and
+        never exceeds the ceiling. Uncorrelated retries matter because the failure
+        mode here is a provider-wide rate limit -- several callers backing off in
+        lockstep arrive together and trip it again.
+        """
+        ceiling = min(BASE_BACKOFF_SECONDS * (2 ** (attempt - 1)), MAX_BACKOFF_SECONDS)
+        return ceiling * (0.5 + 0.5 * self._jitter())
+
     def _embed_batch(self, batch: list[str]) -> list[list[float]]:
-        try:
-            response = self._post(
-                self._url,
-                json={"inputs": batch, "options": {"normalize": True}},
-                headers=self._headers(),
-                timeout=self._timeout,
-            )
-        except httpx.HTTPError as exc:
-            # Type only: the exception message can carry the URL, and a request
-            # header echoed into a log is how a token ends up somewhere it should
-            # not (NFR-5).
-            raise EmbeddingError(
-                f"huggingface request failed: {type(exc).__name__}"
-            ) from exc
+        """Post one batch, retrying transient failures.
 
-        if response.status_code != 200:
-            # The body can echo the request, so the status alone is reported.
-            raise EmbeddingError(
-                f"huggingface returned HTTP {response.status_code} for "
-                f"{self._model}; check the model name and HF_TOKEN"
-            )
+        Retryable: connection and timeout errors (`httpx.TransportError` covers
+        ConnectError, ReadTimeout, ConnectTimeout, ReadError and friends) plus the
+        statuses in `RETRYABLE_STATUS_CODES`. Everything else -- a 401, a 404, a
+        malformed body -- raises on the first attempt, because repeating a
+        deterministic failure only delays the diagnosis.
+        """
+        last_error = ""
+        for attempt in range(1, self._max_attempts + 1):
+            try:
+                response = self._post(
+                    self._url,
+                    json={"inputs": batch, "options": {"normalize": True}},
+                    headers=self._headers(),
+                    timeout=self._timeout,
+                )
+            except httpx.TransportError as exc:
+                # Type only: the exception message can carry the URL, and a request
+                # header echoed into a log is how a token ends up somewhere it should
+                # not (NFR-5).
+                last_error = f"huggingface request failed: {type(exc).__name__}"
+                retryable = True
+            else:
+                if response.status_code == 200:
+                    return self._parse(response.json(), len(batch))
+                # The body can echo the request, so the status alone is reported.
+                last_error = (
+                    f"huggingface returned HTTP {response.status_code} for "
+                    f"{self._model}; check the model name and HF_TOKEN"
+                )
+                retryable = response.status_code in RETRYABLE_STATUS_CODES
 
-        return self._parse(response.json(), len(batch))
+            if not retryable:
+                raise EmbeddingError(last_error)
+            if attempt == self._max_attempts:
+                noun = "attempt" if attempt == 1 else "attempts"
+                raise EmbeddingError(f"{last_error} (after {attempt} {noun})")
+
+            delay = self._backoff(attempt)
+            # No URL, no body, no headers: NFR-5.
+            log.warning(
+                "huggingface embedding attempt failed; retrying",
+                extra={
+                    "attempt": attempt,
+                    "max_attempts": self._max_attempts,
+                    "delay_seconds": round(delay, 3),
+                    "reason": last_error.split(";")[0],
+                },
+            )
+            self._sleep(delay)
+
+        # Unreachable: the loop either returns or raises. Present so the signature
+        # is total rather than relying on control flow a reader has to verify.
+        raise EmbeddingError(last_error or "huggingface embedding failed")
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
