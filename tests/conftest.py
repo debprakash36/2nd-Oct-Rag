@@ -20,6 +20,9 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 
 os.environ.setdefault("ENVIRONMENT", "test")
+# The developer's `.env` may set API_TOKEN. Tests construct an open API unless a
+# test sets the token itself, so the env var has to win over the file.
+os.environ["API_TOKEN"] = ""
 
 
 @pytest.fixture
@@ -100,6 +103,7 @@ def client(engine: Engine, settings_env: Settings) -> Iterator[TestClient]:
     from app.main import create_app
 
     app = create_app()
+    app.state.settings = settings_env
     app.dependency_overrides[get_settings] = lambda: settings_env
     with TestClient(app) as test_client:
         yield test_client

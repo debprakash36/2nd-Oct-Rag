@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useMemo, useRef, useState } from "react";
-import type { Source } from "@/lib/types";
+import { sourceLabel, type Source } from "@/lib/types";
 import styles from "./CitedAnswer.module.css";
 
 /**
@@ -118,7 +118,7 @@ export default function CitedAnswer({ content, sources }: Props) {
               className={styles.marker}
               aria-expanded={expanded}
               aria-controls={panelId}
-              aria-label={`Citation ${index}: ${source.filename}${
+              aria-label={`Citation ${index}: ${sourceLabel(source)}${
                 source.page !== null ? `, page ${source.page}` : ""
               }`}
               onClick={() => void toggle(index)}

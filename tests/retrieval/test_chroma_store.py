@@ -447,5 +447,6 @@ class TestChromaSelection:
             embedding_provider="huggingface",
             generation_provider="groq",
             embedding_model="sentence-transformers/all-MiniLM-L6-v2",
+            api_token="test-token",
         )
         prod.validate_production()

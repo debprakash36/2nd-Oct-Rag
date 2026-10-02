@@ -14,6 +14,12 @@ from app.generation.validator import (
 )
 
 
+def test_fullwidth_brackets_count_as_citations():
+    result = validate_sentence("Refunds take 30 days\u30101\u3011.", 2)
+    assert result.markers == (1,)
+    assert "[1]" in result.text
+
+
 def test_extract_markers_finds_all_integers():
     assert extract_markers("Refunds [1] and shipping [3][4].") == [1, 3, 4]
     assert extract_markers("No markers here.") == []

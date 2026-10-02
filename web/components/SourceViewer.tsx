@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Source } from "@/lib/types";
+import { sourceLabel, type Source } from "@/lib/types";
 import { ApiError, apiFetch } from "@/lib/api";
 import type { Passage } from "@/lib/types";
 import styles from "./SourceViewer.module.css";
@@ -76,6 +76,8 @@ export default function SourceViewer({ sources, abstained = false }: Props) {
         {sources.map((source) => {
           const isOpen = open.has(source.chunk_id);
           const text = passages[source.chunk_id];
+          const namedByBreadcrumb = !source.filename && Boolean(source.breadcrumb);
+          const location = namedByBreadcrumb ? null : source.breadcrumb;
           return (
             <li
               key={source.chunk_id}
@@ -91,11 +93,11 @@ export default function SourceViewer({ sources, abstained = false }: Props) {
               >
                 <span className={styles["source-index"]}>[{source.index}]</span>
                 <div>
-                  <span className={styles["source-name"]}>{source.filename}</span>
-                  {(source.breadcrumb || source.page !== null) && (
+                  <span className={styles["source-name"]}>{sourceLabel(source)}</span>
+                  {(location || source.page !== null) && (
                     <span className={styles["source-location"]}>
-                      {source.breadcrumb}
-                      {source.breadcrumb && source.page !== null ? " — " : ""}
+                      {location}
+                      {location && source.page !== null ? " — " : ""}
                       {source.page !== null ? `p. ${source.page}` : ""}
                     </span>
                   )}

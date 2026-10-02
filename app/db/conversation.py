@@ -187,9 +187,9 @@ def message_history(
 def query_history(session: Session, conversation_id: str, *, limit: int) -> list[str]:
     """Recent *user* questions, for rule-based anaphora resolution.
 
-    Assistant turns excluded — see the module docstring. Only the last few are
-    useful (`resolve_anaphora` reads `history[-1]`), but a small window is kept so a
-    future multi-turn resolver has something to work with without a schema change.
+    Assistant turns excluded — see the module docstring. The caller passes
+    `retrieval_memory_turns` (default 10). `resolve_anaphora` walks that window
+    from the newest turn backward, so a short reply does not hide the topic.
     """
     if limit <= 0:
         return []

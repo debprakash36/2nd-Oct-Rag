@@ -18,16 +18,19 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.api import (
     admin_documents,
+    auth,
     chat,
     chunks,
     conversations,
     feedback,
     health,
+    pilot,
 )
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
 from app.core.guardrails import RateLimitExceeded
 from app.core.logging import configure_logging, get_logger
+from app.core.auth import AuthMiddleware
 from app.core.middleware import TraceIdMiddleware
 from app.db.session import create_all, get_engine, get_session_factory
 
@@ -135,18 +138,22 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+    settings = get_settings()
+    app.state.settings = settings
     app.add_middleware(TraceIdMiddleware)
+    # Inside CORS so a 401 still carries the allow-origin header the browser needs.
+    app.add_middleware(AuthMiddleware)
     # The web UI is a separate origin, so its XHRs need this. Origins are read from
     # settings rather than hardcoded, and default to localhost only: a misconfigured
     # deployment should refuse browser origins, not allow all of them.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=get_settings().cors_origin_list,
+        allow_origins=settings.cors_origin_list,
         # Only methods the client actually uses. PUT appears for feedback votes.
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "X-Trace-Id"],
-        # No cookies: nothing here is authenticated, and allowing credentials with a
-        # wildcard origin would be a vulnerability the day auth lands.
+        allow_headers=["Authorization", "Content-Type", "X-Trace-Id"],
+        # Bearer tokens travel in a header, not a cookie, so credentialed CORS stays
+        # off. A wildcard origin plus cookies would be a cross-site vulnerability.
         allow_credentials=False,
         # Preflight responses are cheap and static; a short cache keeps the browser
         # from re-asking on every request.
@@ -178,7 +185,9 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(health.router)
+    app.include_router(auth.router)
     app.include_router(admin_documents.router)
+    app.include_router(pilot.router)
     app.include_router(chat.router)
     app.include_router(conversations.router)
     app.include_router(chunks.router)

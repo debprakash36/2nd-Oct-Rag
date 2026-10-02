@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { authHeaders } from "@/lib/auth";
 import { apiFetch, API_BASE } from "@/lib/api";
 import type { DocumentRow, UploadResponse } from "@/lib/types";
 import styles from "./admin.module.css";
@@ -13,9 +14,7 @@ import styles from "./admin.module.css";
  * during development; batch upload, duplicate handling, and the ingest queue's
  * operational surface are Phase 5 concerns and not built here.
  *
- * **This page has no authentication** (architecture.md NG5). v1 assumes it is only
- * reachable on an internal network. Do not expose it publicly — the delete action
- * would be unauthenticated.
+ * Gated by the same bearer token as the rest of the API when `API_TOKEN` is set.
  */
 export default function AdminPage() {
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
@@ -88,6 +87,7 @@ export default function AdminPage() {
       }
       const response = await fetch(`${API_BASE}/admin/documents`, {
         method: "POST",
+        headers: authHeaders(),
         body: form,
       });
       if (!response.ok) {

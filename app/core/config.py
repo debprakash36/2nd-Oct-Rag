@@ -138,6 +138,11 @@ class Settings(BaseSettings):
     # constant.
     retrieval_threshold: float = Field(default=0.10, ge=0.0, le=1.0)
     retrieval_max_context_tokens: int = Field(default=4000, gt=0)
+    # Prior *user* questions passed to retrieval for anaphora resolution. Separate
+    # from `chat_history_turns`, which bounds the generation prompt: a follow-up
+    # can depend on a question the model no longer sees verbatim. A hard cut of
+    # the last 10 user turns; 0 sends the current question alone.
+    retrieval_memory_turns: int = Field(default=10, ge=0)
     # Which vector store backend serves the vector half of hybrid retrieval.
     #
     # There is deliberately no "auto". It inferred the backend from the database
@@ -196,7 +201,9 @@ class Settings(BaseSettings):
     groq_base_url: str = "https://api.groq.com/openai/v1"
     # A current small instruct model. Config, not code, so a model bump is not a
     # deploy (PRD open question 8 is still open on cost).
-    groq_generation_model: str = "llama-3.3-70b-versatile"
+    # llama-3.3-70b-versatile was shut down by Groq on 2026-08-16. gpt-oss-120b
+    # is the documented replacement.
+    groq_generation_model: str = "openai/gpt-oss-120b"
     #: Bounds a stalled stream. The TTFT budget is 5 s (NFR-1) and architecture.md
     #: 7.4 budgets 3.5 s of it for the model, so a connect timeout well above that
     #: would spend the whole budget waiting for a socket.
@@ -252,6 +259,13 @@ class Settings(BaseSettings):
     # requests; there are none here, but a wildcard silently turns any future
     # cookie-auth addition into a cross-origin vulnerability.
     cors_allow_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+
+    # --- Access --------------------------------------------------------------
+    # Empty means open, which is what tests and an unconfigured checkout need.
+    # A non-empty value requires `Authorization: Bearer <token>` on every route
+    # except health and the login probe. The browser never receives this value
+    # except by the operator typing it in; it is not a NEXT_PUBLIC variable.
+    api_token: str = ""
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -322,6 +336,12 @@ class Settings(BaseSettings):
                 f"belongs to the offline provider; with EMBEDDING_PROVIDER="
                 f"huggingface it would be sent to the API as a model name. Set "
                 f"EMBEDDING_MODEL, e.g. sentence-transformers/all-MiniLM-L6-v2."
+            )
+        if deployed and not self.api_token:
+            raise RuntimeError(
+                "api_token must be set in staging/production. An empty token "
+                "leaves every endpoint open, including document upload and delete. "
+                "Set API_TOKEN to a long random value."
             )
 
     @property

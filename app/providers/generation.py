@@ -211,12 +211,21 @@ class GroqGenerationProvider:
         max_tokens: int,
         temperature: float = 0.0,
     ) -> Iterator[str]:
+        # gpt-oss spends part of max_tokens on a hidden reasoning channel. A
+        # concise budget of 256 can be used up before any answer text is emitted,
+        # which the citation check then treats as an ungrounded refusal.
+        budget = max_tokens
+        extra: dict[str, object] = {}
+        if "gpt-oss" in model:
+            budget = max_tokens + 1024
+            extra["reasoning_effort"] = "low"
         payload = {
             "model": model,
             "messages": messages,
-            "max_tokens": max_tokens,
+            "max_tokens": budget,
             "temperature": temperature,
             "stream": True,
+            **extra,
         }
         headers = {
             "Authorization": f"Bearer {self._api_key}",

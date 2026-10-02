@@ -26,6 +26,15 @@ from dataclasses import dataclass
 
 #: Inline citation marker: `[3]`. Only non-negative integers are markers.
 MARKER_RE = re.compile(r"\[(\d+)\]")
+#: Some models emit fullwidth brackets (`【1】`) for the same marker. Those are
+#: citations, not prose, and have to be folded into the ASCII form before the
+#: closed-set check or a grounded answer is refused.
+_WIDE_MARKER_RE = re.compile(r"[\u3010\uff3b]\s*(\d+)\s*[\u3011\uff3d]")
+
+
+def normalize_markers(text: str) -> str:
+    """Rewrite fullwidth citation brackets to `[n]`."""
+    return _WIDE_MARKER_RE.sub(r"[\1]", text)
 
 
 def extract_markers(text: str) -> list[int]:
@@ -58,6 +67,7 @@ def _tidy(text: str) -> str:
 
 def validate_sentence(text: str, passage_count: int) -> ValidatedSentence:
     """Validate one sentence against a retrieved set of `passage_count` passages."""
+    text = normalize_markers(text)
     markers = extract_markers(text)
     valid = tuple(n for n in markers if 1 <= n <= passage_count)
     stripped = tuple(n for n in markers if not 1 <= n <= passage_count)

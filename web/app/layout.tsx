@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import AuthGate from "@/components/AuthGate";
+import SessionControls from "@/components/SessionControls";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -24,9 +26,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <nav className="app-nav">
               <Link href="/chat">Chat</Link>
               <Link href="/admin">Admin</Link>
+              <Link href="/admin/pilot">Pilot</Link>
+              <SessionControls />
             </nav>
           </header>
-          {children}
+          <AuthGate>{children}</AuthGate>
         </div>
       </body>
     </html>

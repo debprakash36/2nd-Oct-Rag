@@ -248,21 +248,6 @@ def _conversation_history(
     # FR-30 evidence with what is meant to be a context-window setting.
     persistable = True
 
-    if settings.chat_history_turns <= 0:
-        # Recorded even with history disabled. Persistence is independent of the
-        # context window: returning here before the append would leave the thread
-        # holding an assistant turn with no question above it.
-        append_turn(
-            session,
-            conversation_id,
-            role=TurnRole.USER,
-            content=payload.message,
-        )
-        session.commit()
-        return ConversationHistory(persistable=persistable)
-
-    limit = settings.chat_history_turns
-
     # History is read *before* the current question is appended, so the model and the
     # retriever both see strictly prior turns.
     #
@@ -272,8 +257,22 @@ def _conversation_history(
     # sentence twice, once as context and once as the question, and the retriever
     # resolves every anaphora against the question being asked. Reading first makes
     # the exclusion structural instead of something a future edit can un-break.
-    prior_messages = message_history(session, conversation_id, limit=limit)
-    prior_queries = query_history(session, conversation_id, limit=limit)
+    #
+    # The two windows are independent. `chat_history_turns` bounds the generation
+    # prompt; `retrieval_memory_turns` is the last N user questions the retriever
+    # may resolve a follow-up against. Zero on either side disables that view only.
+    message_limit = settings.chat_history_turns
+    query_limit = settings.retrieval_memory_turns
+    prior_messages = (
+        message_history(session, conversation_id, limit=message_limit)
+        if message_limit > 0
+        else []
+    )
+    prior_queries = (
+        query_history(session, conversation_id, limit=query_limit)
+        if query_limit > 0
+        else []
+    )
 
     # Appended now, still before retrieval, so a retrieval failure or a disconnected
     # stream leaves the question visible in the thread. Those are exactly the

@@ -45,6 +45,18 @@ describe("CitedAnswer", () => {
     expect(screen.getByText(/Refunds take 30 days/)).toBeInTheDocument();
   });
 
+  it("uses the breadcrumb when the sources event has no filename", () => {
+    render(
+      <CitedAnswer
+        content="See [1]."
+        sources={[{ index: 1, chunk_id: "c1", breadcrumb: "Refund Policy", page: null }]}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: /citation 1: refund policy/i }),
+    ).toBeInTheDocument();
+  });
+
   it("gives each marker an accessible name that includes the source", () => {
     render(<CitedAnswer content="See [1] and [2]." sources={SOURCES} />);
 

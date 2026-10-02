@@ -47,6 +47,16 @@ describe("SourceViewer", () => {
     expect(screen.getAllByText("policy.md")).toHaveLength(2);
   });
 
+  it("uses the breadcrumb as the name when filename is absent", () => {
+    render(
+      <SourceViewer
+        sources={[{ index: 1, chunk_id: "c9", breadcrumb: "policy > Refund Policy", page: null }]}
+      />,
+    );
+    expect(screen.getByText("policy > Refund Policy")).toBeInTheDocument();
+    expect(screen.getAllByText("policy > Refund Policy")).toHaveLength(1);
+  });
+
   it("shows breadcrumb and page", () => {
     render(<SourceViewer sources={SOURCES} />);
     expect(screen.getByText(/Refund Policy > Digital/)).toBeInTheDocument();

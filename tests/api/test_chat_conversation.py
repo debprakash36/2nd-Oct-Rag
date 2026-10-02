@@ -264,6 +264,35 @@ class TestHistoryReachesThePipeline:
         assert history == ["What is the refund window for digital products?"]
         assert "how long do I have?" not in history
 
+    def test_retrieval_memory_window_is_ten_user_questions(
+        self, client: TestClient, live_doc, settings_env, monkeypatch
+    ):
+        """Retrieval sees the last 10 user questions, not the prompt window."""
+        monkeypatch.setattr(settings_env, "retrieval_threshold", 0.0, raising=False)
+        monkeypatch.setattr(settings_env, "retrieval_memory_turns", 10, raising=False)
+        monkeypatch.setattr(settings_env, "chat_history_turns", 4, raising=False)
+        cid = client.post("/conversations").json()["conversation_id"]
+        for i in range(12):
+            _ask(client, f"question number {i} about refunds", cid)
+
+        captured: dict[str, object] = {}
+        import app.retrieval.retriever as retriever_module
+
+        original = retriever_module.Retriever.retrieve
+
+        def spy(self, query, **kwargs):
+            captured.update(kwargs)
+            return original(self, query, **kwargs)
+
+        monkeypatch.setattr("app.api.chat.Retriever.retrieve", spy)
+        _ask(client, "how long is that?", cid)
+
+        history = captured["history"]
+        assert len(history) == 10
+        assert history[0].startswith("question number 2")
+        assert history[-1].startswith("question number 11")
+        assert "how long is that?" not in history
+
     def test_first_message_has_no_history(
         self, client: TestClient, live_doc, settings_env, monkeypatch
     ):

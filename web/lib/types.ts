@@ -34,8 +34,17 @@ export interface Source {
   index: number;
   chunk_id: string;
   breadcrumb: string | null;
-  filename: string;
+  /**
+   * Present when the client already knows the document name. The live `sources`
+   * event only sends `chunk_id`, `breadcrumb`, and `page`, so this is optional.
+   */
+  filename?: string | null;
   page: number | null;
+}
+
+/** Visible and accessible name for a source. Prefers the filename, then the breadcrumb. */
+export function sourceLabel(source: Pick<Source, "filename" | "breadcrumb">): string {
+  return source.filename || source.breadcrumb || "source";
 }
 
 export interface Passage {
@@ -102,3 +111,67 @@ export interface UploadResponse {
 }
 
 export type FeedbackValue = "up" | "down" | "none";
+
+export type PilotMetricState = "pass" | "fail" | "unmeasured";
+
+export interface PilotMetric {
+  name: string;
+  value: number | null;
+  target: string;
+  state: PilotMetricState;
+  detail: string;
+  samples: number;
+}
+
+export interface PilotMetricsResponse {
+  gate: "earned" | "not_earned";
+  min_samples: number;
+  metrics: PilotMetric[];
+  raw: {
+    total: number;
+    distinct_queries: number;
+    abstained: number;
+    up_votes: number;
+    down_votes: number;
+    votes: number;
+    timed: number;
+    voted_queries: number;
+    ttft_p95: number;
+    ttft_count: number;
+  };
+  note: string;
+}
+
+export interface PilotReviewItem {
+  query: string;
+  why: "refused" | "down";
+  refusals: number;
+  down_votes: number;
+  occurrences: number;
+}
+
+export interface PilotReviewResponse {
+  items: PilotReviewItem[];
+  empty_reason: string | null;
+}
+
+export interface PilotDiagnosis {
+  query: string;
+  classification: string;
+  confidence: string;
+  fix: string;
+  evidence: string;
+  notes: string[];
+}
+
+export interface ThresholdSnapshot {
+  recorded_at: string | null;
+  commit: string | null;
+  chunks: number | null;
+  documents: number | null;
+  embedding_model: string | null;
+  recommended: number | null;
+  recall_at_10: number | null;
+  refusal_rate: number | null;
+  note: string;
+}

@@ -125,8 +125,8 @@ def resolve_anaphora(
     Rule-based, per §3.2 step 1, so the common multi-turn case costs no model
     call. Two forms are handled:
 
-    * Pronoun reference — "Can I do that?" resolves to the previous turn's topic.
-    * Elliptical topic shift — "What about refunds?" prepends the previous topic,
+    * Pronoun reference — "Can I do that?" resolves to the newest usable prior topic.
+    * Elliptical topic shift — "What about refunds?" prepends that topic,
       because the topic word alone is often too generic to retrieve.
 
     Returns the query unchanged when nothing resolvable is found. Guessing here
@@ -137,7 +137,15 @@ def resolve_anaphora(
     if not history:
         return RewriteResult(query=query, original=query)
 
-    antecedent = extract_topic(history[-1])
+    # Newest usable turn wins. A short reply ("yes") has no antecedent, so the
+    # window is walked backward until a turn long enough to name a topic is found.
+    # Stopping at history[-1] would drop the rest of the retrieval memory window.
+    antecedent = ""
+    for turn in reversed(history):
+        candidate = extract_topic(turn)
+        if len(_tokens(candidate)) >= _MIN_ANTECEDENT_TOKENS:
+            antecedent = candidate
+            break
     antecedent_tokens = _tokens(antecedent)
     if len(antecedent_tokens) < _MIN_ANTECEDENT_TOKENS:
         return RewriteResult(query=query, original=query)

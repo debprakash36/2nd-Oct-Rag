@@ -143,7 +143,22 @@ describe("streamChat", () => {
     ]);
   });
 
-  it("maps a 429 to rate_limited", async () => {
+  it("maps a 401 to unauthorized and clears the stored token", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ detail: "Sign in required." }), { status: 401 }),
+      ),
+    );
+
+    const { events, handlers } = recorder();
+    await streamChat({ message: "hi" }, handlers);
+
+    expect(events[0].data).toEqual({
+      code: "unauthorized",
+      message: "Sign in required.",
+    });
+  });
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>

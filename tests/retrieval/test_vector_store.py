@@ -324,8 +324,19 @@ class TestFakeProvidersAreRefusedInProduction:
             embedding_model="sentence-transformers/all-MiniLM-L6-v2",
             hf_token="hf_x",
             groq_api_key="gsk_x",
+            api_token="test-token",
         )
         prod.validate_production()  # must not raise
+
+    def test_an_empty_api_token_is_refused(self):
+        prod = self._production_settings(
+            embedding_provider="huggingface",
+            generation_provider="groq",
+            embedding_model="sentence-transformers/all-MiniLM-L6-v2",
+            api_token="",
+        )
+        with pytest.raises(RuntimeError, match="api_token must be set"):
+            prod.validate_production()
 
     def test_a_fake_model_name_is_refused_even_with_a_real_provider(self):
         """The provider and the model name can disagree.
@@ -391,8 +402,9 @@ class TestFakeProvidersAreRefusedInProduction:
             environment="production",
             database_url="postgresql+psycopg://rag:rag@localhost:5432/rag",
             vector_store="pgvector",
-            # embedding_provider / generation_provider / embedding_model all omitted,
-            # so they take their module defaults.
+            # Ignore the developer's .env. These three are omitted on purpose so
+            # they take the module defaults (fake), which a real deploy must reject.
+            _env_file=None,
         )
         assert prod.embedding_provider == "fake"
         assert prod.generation_provider == "fake"

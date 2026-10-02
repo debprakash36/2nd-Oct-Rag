@@ -7,6 +7,8 @@
  * reachable from here.
  */
 
+import { authHeaders, clearToken } from "./auth";
+
 /**
  * Base URL for API calls.
  *
@@ -39,11 +41,15 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     ...init,
     headers: {
       "Content-Type": "application/json",
+      ...authHeaders(),
       ...(init?.headers ?? {}),
     },
   });
 
   if (!response.ok) {
+    if (response.status === 401 && !path.startsWith("/auth/")) {
+      clearToken();
+    }
     throw new ApiError(response.status, await readError(response));
   }
   if (response.status === 204) {

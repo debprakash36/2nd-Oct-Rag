@@ -82,6 +82,15 @@ class TestResolveAnaphora:
         result = resolve_anaphora("Can I do that?", ["Yes"])
         assert not result.changed
 
+    def test_short_latest_turn_falls_back_within_the_window(self):
+        """A bare 'yes' must not hide the topic still inside the memory window."""
+        result = resolve_anaphora(
+            "Can I do that?",
+            ["The refund policy allows returns.", "Yes"],
+        )
+        assert result.changed
+        assert "refund" in result.query.lower()
+
     def test_unresolvable_query_left_alone(self):
         """Guessing here would be worse than abstaining from the rewrite."""
         result = resolve_anaphora("What is the limit?", ["Refund policy"])

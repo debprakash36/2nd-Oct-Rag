@@ -14,9 +14,8 @@ Clicks are idempotent and reversible by overwriting. A double-click on "up" is n
 an error, and neither is switching from up to down — that is someone reconsidering,
 not a conflict.
 
-**No auth in v1**, so anyone who can reach the app can set feedback on any
-`query_id`. The ids are 32-char uuids, so this is not enumerable, but it is
-authorization by obscurity rather than by design (architecture.md NG5).
+When `API_TOKEN` is set, this endpoint is behind the same bearer gate as the
+rest of the API. Empty token still means open, which is what tests need.
 """
 
 from __future__ import annotations

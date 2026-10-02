@@ -15,6 +15,7 @@
  *   error            instead of done
  */
 
+import { authHeaders, clearToken } from "./auth";
 import type { Source } from "./types";
 
 export interface StreamHandlers {
@@ -38,14 +39,15 @@ export async function streamChat(
 ): Promise<void> {
   const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8000"}/chat/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(request),
     signal,
   });
 
   // A pre-stream rejection: 400 for the size cap, 429 for the rate limit. The body
   // is the user-safe message the backend already composed.
-  if (!response.ok) {
+    if (!response.ok) {
+    if (response.status === 401) clearToken();
     const { message, code } = await readErrorBody(response);
     handlers.onError(code, message);
     return;
@@ -64,7 +66,14 @@ async function readErrorBody(
   try {
     const body = (await response.json()) as { detail?: string };
     return {
-      code: response.status === 429 ? "rate_limited" : "query_too_large",
+      code:
+        response.status === 401
+          ? "unauthorized"
+          : response.status === 429
+            ? "rate_limited"
+            : response.status === 400
+              ? "query_too_large"
+              : "internal_error",
       message: body.detail ?? "Something went wrong. Please try again.",
     };
   } catch {

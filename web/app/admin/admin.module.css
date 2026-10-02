@@ -130,3 +130,8 @@
 .upload-bad {
   color: var(--danger);
 }
+
+.section {
+  margin: 2rem 0 0.5rem;
+  font-size: 1rem;
+}
