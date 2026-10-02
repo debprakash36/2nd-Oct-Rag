@@ -78,7 +78,11 @@ services:
       - key: CORS_ALLOW_ORIGINS
         sync: false
       - key: LOG_LEVEL
-        value: info
+        # Uppercase, and case-sensitively so: log_level is Literal["DEBUG",
+        # "INFO", "WARNING", "ERROR"], not a case-insensitive enum. The
+        # lowercase form that looks obvious crashes the deploy at startup with
+        # a pydantic literal_error on log_level.
+        value: INFO
 
   # ---------------------------------------------------------------------------
   # Web -- Next.js
@@ -103,6 +107,11 @@ services:
     healthCheckPath: /
     envVars:
       - key: NODE_VERSION
+        # package.json declares no engines field, so there is nothing in the
+        # repo to check this against; 22 is a supported LTS choice, not a
+        # verified requirement. `npm run build` was confirmed working on the
+        # local Node 24, so anything modern is fine -- raise this only if the
+        # build ever fails on a version skew.
         value: "22"
       - key: NEXT_PUBLIC_API_BASE
         sync: false
