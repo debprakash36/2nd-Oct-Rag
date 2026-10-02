@@ -1,5 +1,5 @@
 .PHONY: check lint format typecheck test corpus ingest migrate dev venv chroma-sync \
-	load-test k6-load clean-cache \
+	load-test k6-load clean-cache launch-check \
 	web-install web-lint web-typecheck web-test web-check web-dev web-build
 
 PY := .venv/Scripts/python.exe
@@ -58,6 +58,9 @@ content-gaps:
 
 pilot-metrics:
 	$(PY) scripts/pilot_metrics.py
+
+launch-check:
+	$(PY) scripts/check_launch.py
 
 migrate:
 	$(PY) -m alembic upgrade head

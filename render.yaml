@@ -86,6 +86,10 @@ services:
       # rather than silently opening CORS.
       - key: CORS_ALLOW_ORIGINS
         sync: false
+      - key: API_TOKEN
+        # Required in production. An empty value leaves upload and delete open.
+        # Generate a long random string and put it only here, never in NEXT_PUBLIC_*.
+        sync: false
       - key: LOG_LEVEL
         # Uppercase, and case-sensitively so: log_level is Literal["DEBUG",
         # "INFO", "WARNING", "ERROR"], not a case-insensitive enum. The

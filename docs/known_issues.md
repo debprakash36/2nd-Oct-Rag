@@ -13,47 +13,26 @@ Severity is about impact on a deployment, not about how hard the code is to chan
 
 ---
 
-## 1. Mixed-dimension vectors in a local `rag.db` (health probe is fixed)
+## 1. Mixed-dimension vectors (health probe closed; this corpus is consistent)
 
-**Severity: blocking for that database file. The `/health` blind spot is closed.**
+**Severity: closed on the current local `rag.db`.**
 
-`measure_divergence(..., dim=settings.embedding_dim)` counts wrong-width vectors.
-`/health` returns 503 with `status: degraded` when any live chunk's stored width
-does not match `EMBEDDING_DIM`. Regression:
-`tests/retrieval/test_vector_store_selection.py::TestHealthReportsAMalformedCorpus`.
+`/health` 503s when any live chunk's stored width disagrees with `EMBEDDING_DIM`.
+A check on this checkout reported `mismatched_dims = 0` and `308/308 live chunks`.
+If a future ingest writes the wrong width, the probe fails rather than returning `ok`.
+Re-embed with `scripts/reembed_chunks.py` if it happens again.
 
-A copy of `rag.db` can still hold mixed 64-dim / 384-dim rows (item 2). The probe
-now reports that instead of `ok`. Re-embed with `scripts/reembed_chunks.py`.
 
 ---
 
-## 2. `rag.db` holds 11 short-vector rows and cannot be repaired in place
+## 2. Re-embedding a hash-vector corpus
 
-**Severity: blocking for local work. Not urgent in production — production is Postgres.**
+**Severity: closed on this checkout's serving DB. Still the rule for a clone.**
 
-Confirmed state: 124 documents, 308 chunks, of which **297 are 384-dim and 11 are
-64-dim**, all `embedding_model = fake-embed-v1`.
+This machine's `rag.db` is uniformly 384-dim. A fresh clone that still has
+`fake-embed-v1` / mixed-width rows must re-embed with `EMBEDDING_PROVIDER=huggingface`
+and a valid `HF_TOKEN` via `scripts/reembed_chunks.py`. Do not edit vectors in place.
 
-The repair is **blocked on an API key**, not on anything else:
-
-- `HF_TOKEN` is empty in `.env`.
-- Re-embedding requires `EMBEDDING_PROVIDER=huggingface` and a valid token.
-- `make chroma-sync` and `pytest -m indexcheck` were deliberately **not** run, because
-  they would operate on this corpus.
-
-`rag.db.pre_purge_backup` is retained and gitignored.
-
-A clean copy exists at `rag_eval.db` (113 documents, 297 chunks) with the 11 rows
-removed. Retrieval, the eval harness, and the threshold re-sweep all run against it.
-**It is a derived artifact and is gitignored — anyone else cloning gets a fresh
-`rag.db` with the same 11 bad rows.**
-
-This is documented at length in `docs/investigation_duplicates.md`; it is repeated here
-because item 1 is a consequence of it and neither is discoverable from the other.
-
-**Do not** try to fix this by editing `rag.db` directly. The vectors are wrong, not the
-counts; a row edit would make the count agree while leaving retrieval broken, which is
-strictly worse than the current honest failure.
 
 ---
 
@@ -141,11 +120,11 @@ production-quality measurement. On the same corpus with `all-MiniLM-L6-v2` it is
 
 | Value | Status |
 |---|---|
-| `NODE_VERSION=22` | **Guess.** `web/package.json` declares no `engines` field, so nothing in the repo constrains it. `npm run build` was confirmed working on Node 24 locally. |
-| `EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2` | **Unverified.** The repo default is `fake-embed-v1`. This model name comes from the 384-dim decision in `docs/architecture.md`, not from code. |
-| `postgresMajorVersion: 16` | **Choice.** The code only requires the `vector` extension; no version is pinned anywhere. |
-| `Pre-Deploy Command` | **Plan-dependent.** Render exposes this only on paid plans. On free, keep `alembic upgrade head` in the Start Command. |
-| `npm start -- --hostname 0.0.0.0 --port $PORT` | **Untested.** `next start` already binds `0.0.0.0` by default; plain `npm start` works. |
+| `NODE_VERSION=22` | **Pinned.** `web/package.json` `engines.node` is `>=22`. |
+| `EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2` | **Required in production** by `validate_production()` when not using fake. |
+| `postgresMajorVersion: 16` | **Choice.** The code only requires the `vector` extension. |
+| `NEXT_PUBLIC_API_BASE` | **Build-time.** Runtime-only does nothing; `scripts/check_launch.py` cannot see the Next bundle. |
+| `API_TOKEN` | **Required in production.** Listed in `render.yaml` as `sync: false`. |
 
 `PYTHON_VERSION=3.12` is also a judgement call, though a better-supported one:
 `pyproject.toml` says `requires-python = ">=3.11"`, while its own mypy configuration
@@ -154,32 +133,11 @@ documents that 3.11 fails on numpy's bundled stubs and that raising `requires-py
 
 ---
 
-## 8. A stale test-failure log is committed to the repo
+## 8. Stale vitest failure log
 
-**Severity: degraded — noise and a misleading signal, not a secret.**
+**Severity: closed.** `web/chatfail.txt` is gitignored (`*fail*.txt`) and is not
+tracked. Failing-run captures belong in CI logs, not the tree.
 
-`web/chatfail.txt` is a 13 KB vitest failure log from an earlier debugging session, and
-it is **tracked in git and not ignored**. It records two failures in
-`web/app/chat/page.test.tsx`:
-
-```
-× refuses to send an over-long message before any request (FR-34)
-× re-enables the composer after the stream ends
-```
-
-Both of those tests **pass now** — the full web suite is 76/76 green. So the committed
-artifact asserts failures that no longer exist. Anyone auditing the repo, or any tooling
-that greps for failures, sees this file and reasonably concludes the frontend is broken.
-
-It contains no credentials and no absolute paths, so it is not a leak. It is dead
-weight that is actively misleading.
-
-**Fix:** `git rm --cached web/chatfail.txt` and add it to `.gitignore`.
-
-Build outputs and caches are already handled correctly — `web/.next/`,
-`web/tsconfig.tsbuildinfo`, `pytest.out`, `html.html`, `new.html`, and the
-`.mypy_cache`/`.pytest_cache`/`.ruff_cache` directories are all ignored and untracked.
-That was checked rather than assumed.
 
 ---
 
@@ -193,8 +151,8 @@ So the list above is not read as "this does not work":
 - `/health` responds and correctly reports `ok` on a **consistent** corpus.
 - `alembic` has a single head (`0003_conversations`) with no branch or missing revision.
 - `app.main:app` imports as a FastAPI ASGI instance under production settings.
-- Retrieval works end to end against `rag_eval.db` (3 candidates, no spurious abstain).
-- `rag.db` is unmodified by all of the above; its 11 bad rows are unchanged.
+- Retrieval works end to end against the local corpus.
+- `rag.db` on this checkout is uniformly 384-dim (`mismatched_dims = 0`).
 - The live `GROQ_API_KEY` in `.env` has **never** been committed. `.env` is gitignored
   and untracked; `.env.example` is the tracked, secret-free copy.
 - The `gsk_` strings in `tests/providers/test_hosted_providers.py` are fixtures

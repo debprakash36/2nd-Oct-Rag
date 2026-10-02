@@ -216,3 +216,22 @@ either duplicate text the user has already read or stall a partially-delivered a
 | Documents in `failed` | `error_reason` on the ingest dashboard | §4 |
 | Slow answers | Provider latency first, then retrieval | §5 |
 | "It says it can't help" | 200 (refusal, by design) or 503 (store down) | §1 |
+
+---
+
+## 6. Before a public URL
+
+Local `/health` 200 is not a production clearance. SQLite, fake providers, and
+localhost CORS are allowed when `ENVIRONMENT=local` and refused in staging/production.
+
+```bash
+python scripts/check_launch.py
+```
+
+A FAIL row must be fixed before the process is reachable from the internet.
+`Phase 6 traffic gate` staying BLOCKED is expected until real users exist.
+
+First cloud deploy also needs `CREATE EXTENSION vector;` on Postgres before
+`alembic upgrade head` (`docs/known_issues.md` item 4), `API_TOKEN` set, and
+`NEXT_PUBLIC_API_BASE` present at the **web build**, not only at runtime.
+
