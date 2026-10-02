@@ -3,6 +3,7 @@
 **Purpose:** Phase-by-phase build instructions for an AI coding agent (Cursor). Each phase is self-contained, verifiable, and safe to stop at.
 **Source of truth:** `docs/architecture.md` (design) and `docs/PRD.md` (requirements).
 **How to use:** Work phases in order. Do not start a phase until the previous phase's exit gate passes. Each phase ends with a commit boundary.
+**Known issues:** `docs/known_issues.md` records what is currently broken, blocked, or unverified — including a `/health` blind spot and the blockers that stop Phase 6 from closing.
 
 ---
 
