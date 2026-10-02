@@ -1,0 +1,119 @@
+# Render deployment. Two services plus a Postgres database.
+#
+# Reference: docs/implementation.md. Two decisions below are load-bearing and
+# both are enforced in code, not by convention -- see the notes.
+#
+# Apply with:  New > Blueprint > point at this repo, or paste the fields by hand
+# from the dashboard. The dashboard values for each service are in the comment
+# above that service.
+
+services:
+  # ---------------------------------------------------------------------------
+  # API -- FastAPI + uvicorn
+  #
+  #   Root Directory:  (leave empty)
+  #   Build Command:   pip install -e .
+  #   Start Command:   alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port $PORT
+  #   Health Check:    /health
+  #
+  # Root directory stays empty on purpose: pyproject.toml, alembic.ini and app/
+  # all live at the repo root, and a root dir would hide pyproject.toml so
+  # `pip install -e .` would have nothing to install from.
+  #
+  # The start command is two steps, not one. create_all() in the app lifespan
+  # runs only when ENVIRONMENT is local or test, so a production deploy starts
+  # against an empty schema unless migrations run first. `exec` hands the PID to
+  # uvicorn so Render's SIGTERM reaches it and the container stops promptly
+  # instead of waiting out the grace period on every deploy.
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: rag-api
+    runtime: python
+    plan: starter
+    rootDir: ""
+    buildCommand: pip install -e .
+    startCommand: alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    # Uploads and Chroma's on-disk index are the only things written to the
+    # filesystem. Without a disk they vanish on every deploy, and a vanished
+    # index means every request abstains until the corpus is re-ingested.
+    disk:
+      name: app-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+      # The value is NOT "local". ENVIRONMENT is what selects the production
+      # branch of validate_production(), and leaving it local both skips the
+      # Postgres/pgvector checks and re-enables create_all().
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: rag-db
+          property: connectionString
+      # Must be pgvector. validate_production() raises at startup for 'sqlite'
+      # there: that store is an O(n) Python full scan, which passes the latency
+      # budget on a small corpus and then fails at NFR-4 scale with nothing in
+      # the logs to explain it.
+      - key: VECTOR_STORE
+        value: pgvector
+      - key: EMBEDDING_DIM
+        value: "384"
+      # Fake providers answer from fixtures. They are how the tests run, not how
+      # a deployment answers, and they would make the pilot metrics in Phase 6
+      # meaningless. Both keys are required for a real deployment.
+      - key: EMBEDDING_PROVIDER
+        value: huggingface
+      - key: HF_TOKEN
+        sync: false
+      - key: GENERATION_PROVIDER
+        value: groq
+      - key: GROQ_API_KEY
+        sync: false
+      # Frontend origin, set after the web service exists. Default is
+      # localhost-only, so an unset value makes the browser block every XHR
+      # rather than silently opening CORS.
+      - key: CORS_ALLOW_ORIGINS
+        sync: false
+      - key: LOG_LEVEL
+        value: info
+
+  # ---------------------------------------------------------------------------
+  # Web -- Next.js
+  #
+  #   Root Directory:  web
+  #   Build Command:   npm ci && npm run build
+  #   Start Command:   npm start
+  #
+  # NEXT_PUBLIC_API_BASE must be set as a BUILD variable, not only at runtime:
+  # next inlines NEXT_PUBLIC_* into the browser bundle, so a value added after
+  # the build is not in the JavaScript the browser downloads and the frontend
+  # silently falls back to http://127.0.0.1:8000. Set it under this service's
+  # environment before the first deploy, then re-deploy so the bundle is rebuilt.
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: rag-web
+    runtime: node
+    plan: starter
+    rootDir: web
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NEXT_PUBLIC_API_BASE
+        sync: false
+
+databases:
+  - name: rag-db
+    plan: basic-256mb
+    # pgvector is NOT in Render's default Postgres image. The first migration
+    # needs the extension and alembic/env.py aborts the run without it, so this
+    # has to be enabled once on the created database before the API's first
+    # successful deploy. Either turn on pgvector in the database's settings, or
+    # run `CREATE EXTENSION vector;` as the database owner. This is the single
+    # most common reason a first deploy fails at `alembic upgrade head`.
+    postgresMajorVersion: "16"
