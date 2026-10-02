@@ -20,30 +20,16 @@ from app.core.config import Settings, get_settings
 from app.core.errors import EmbeddingError
 from app.core.logging import get_logger
 from app.providers.base import EmbeddingProvider, RerankerProvider, ScoredDoc
+from app.providers.retry import RETRYABLE_STATUS_CODES, backoff_seconds
 
 log = get_logger("app.providers")
 
 #: Total attempts per batch, including the first. Bounded because this sits inside
-#: a user-facing request: four attempts at a 0.5/1/2 s backoff is ~3.5 s of added
-#: latency in the worst case, which the 5 s TTFT budget (NFR-1) can absorb, while
-#: an unbounded retry would turn a provider outage into a hung request.
+#: a user-facing request: the worst case adds ~3.5 s to a latency the TTFT budget
+#: (NFR-1) can absorb, while an unbounded retry turns a provider outage into a hung
+#: request. The policy itself lives in `app.providers.retry`, shared with the
+#: generation provider so the two cannot drift.
 DEFAULT_MAX_ATTEMPTS = 4
-
-#: First backoff step, doubled each attempt and capped. The cap matters because
-#: the exponent is applied per attempt: without it a larger attempt count walks
-#: into a multi-minute stall.
-BASE_BACKOFF_SECONDS = 0.5
-MAX_BACKOFF_SECONDS = 8.0
-
-#: Statuses worth retrying. 429 is the hosted API's rate limit and the reason this
-#: exists at all -- a sweep is ~1400 sequential calls and trips it. 5xx is a
-#: provider-side fault that a retry usually clears.
-#:
-#: Every other 4xx is deliberately excluded. A 401 or 403 is a bad token and a 404
-#: a bad model name: both return identically on every retry, so retrying them only
-#: delays the real diagnosis by three backoffs. Failing fast keeps the message --
-#: "check the model name and HF_TOKEN" -- the first thing an operator sees.
-RETRYABLE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
 class FakeEmbeddingProvider:
@@ -161,16 +147,8 @@ class HuggingFaceEmbeddingProvider:
         return vectors
 
     def _backoff(self, attempt: int) -> float:
-        """Seconds to wait before `attempt`+1, jittered.
-
-        Equal jitter: half the ceiling is fixed and the other half is random, so
-        the delay never collapses toward zero (which would defeat the backoff) and
-        never exceeds the ceiling. Uncorrelated retries matter because the failure
-        mode here is a provider-wide rate limit -- several callers backing off in
-        lockstep arrive together and trip it again.
-        """
-        ceiling = min(BASE_BACKOFF_SECONDS * (2 ** (attempt - 1)), MAX_BACKOFF_SECONDS)
-        return ceiling * (0.5 + 0.5 * self._jitter())
+        """Seconds to wait before `attempt`+1. Policy in `app.providers.retry`."""
+        return backoff_seconds(attempt, jitter=self._jitter)
 
     def _embed_batch(self, batch: list[str]) -> list[list[float]]:
         """Post one batch, retrying transient failures.

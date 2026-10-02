@@ -201,10 +201,18 @@ class Settings(BaseSettings):
     #: 7.4 budgets 3.5 s of it for the model, so a connect timeout well above that
     #: would spend the whole budget waiting for a socket.
     groq_timeout_seconds: float = Field(default=60.0, gt=0)
-    #: Retries are deliberately *off* by default. The chat path streams to the user
-    #: as tokens arrive, so a mid-stream retry would either duplicate text already
-    #: read or stall a partially delivered answer. A retry here is a decision about
-    #: the streaming contract, not a transport detail.
+    #: Retries are *off* by default, and the default is the safe answer here rather
+    #: than an oversight. The chat path streams to the user as tokens arrive, so a
+    #: retry that fires after the first delta would either duplicate text already
+    #: read or stall a partially delivered answer. Raising this therefore buys
+    #: resilience for a connection that fails *before* the answer starts and
+    #: nothing more -- `GroqGenerationProvider` tracks whether a delta has been
+    #: yielded and stops retrying the moment one has. It counts retries, not
+    #: attempts, so 0 means exactly one attempt.
+    #:
+    #: Set it above 0 only with that narrow scope in mind; raising it is not a way to
+    #: make the streaming path safer. Backoff policy is shared with the embedding
+    #: provider in `app/providers/retry.py`.
     groq_max_retries: int = Field(default=0, ge=0, le=5)
 
     # --- Chat guardrail (FR-34) -------------------------------------------

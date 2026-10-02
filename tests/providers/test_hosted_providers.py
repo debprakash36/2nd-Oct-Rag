@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import json
 import math
-from typing import ClassVar
+from collections.abc import Iterator
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -23,13 +24,32 @@ import pytest
 from app.core.errors import EmbeddingError, GenerationError
 from app.providers.base import EmbeddingProvider, GenerationProvider
 from app.providers.embedding import (
-    MAX_BACKOFF_SECONDS,
     FakeEmbeddingProvider,
     HuggingFaceEmbeddingProvider,
 )
 from app.providers.generation import FakeGenerationProvider, GroqGenerationProvider
+from app.providers.retry import MAX_BACKOFF_SECONDS
 
 DIM = 8
+
+
+def _sse_then_break(*deltas: str) -> Any:
+    """A response whose body raises `ReadError` partway through.
+
+    `httpx.Response(text=...)` is fully buffered, so iterating it never raises. The
+    mid-stream path is unreachable without a genuinely streaming body: this yields
+    the frames as bytes and then fails, which is the only way to get a transport
+    error *after* the caller has been handed a delta.
+    """
+
+    class _Breaking(httpx.SyncByteStream):
+        def __iter__(self) -> Iterator[bytes]:
+            for delta in deltas:
+                frame = {"choices": [{"delta": {"content": delta}}]}
+                yield f"data: {json.dumps(frame)}\n\n".encode()
+            raise httpx.ReadError("connection reset mid-answer")
+
+    return httpx.Response(200, stream=_Breaking())
 
 
 def _sse(*deltas: str) -> str:
@@ -552,6 +572,174 @@ class TestGroqGeneration:
             self._run(provider, '{"error":"invalid api key gsk_secret"}', status=401)
         assert "401" in str(exc.value)
         assert "gsk_secret" not in str(exc.value), "the body may echo the key"
+
+    def _scripted(self, attempts: list[object], **kwargs):
+        """Provider whose mock transport replays `attempts` in order.
+
+        Returns `(provider, sleeps, calls)`. The sleep recorder is returned rather
+        than stashed so a test building two providers does not clobber its own.
+        """
+        sleeps: list[float] = []
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            index = calls
+            calls += 1
+            if index >= len(attempts):
+                raise AssertionError(
+                    f"attempt {index + 1} was not scripted (scripted {len(attempts)})"
+                )
+            item = attempts[index]
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        defaults: dict[str, object] = dict(
+            api_key="gsk_secret", base_url="https://example.test",
+            timeout=1.0, max_retries=0, sleep=sleeps.append, jitter=lambda: 0.0,
+        )
+        defaults.update(kwargs)
+        provider = GroqGenerationProvider(**defaults)  # type: ignore[arg-type]
+        provider._client_factory = lambda **kw: httpx.Client(  # type: ignore[attr-defined]
+            transport=httpx.MockTransport(handler)
+        )
+        return provider, sleeps, lambda: calls
+
+    def _stream(self, provider):
+        return list(
+            provider.stream(
+                [{"role": "user", "content": "hi"}],
+                model="m", max_tokens=16, temperature=0.0,
+            )
+        )
+
+    def _server_error(self):
+        return httpx.Response(503, text="upstream detail")
+
+    def test_pre_first_delta_transport_error_is_retried(self):
+        provider, sleeps, calls = self._scripted(
+            [httpx.ReadTimeout("slow"), httpx.Response(200, text=_sse("hello"))]
+        )
+        provider._max_retries = 2  # type: ignore[attr-defined]
+
+        assert self._stream(provider) == ["hello"]
+        assert calls() == 2
+        assert len(sleeps) == 1, "one backoff between the two attempts"
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            httpx.ReadTimeout("slow"),
+            httpx.ConnectTimeout("slow"),
+            httpx.ConnectError("refused"),
+            httpx.ReadError("reset"),
+        ],
+    )
+    def test_transient_transport_error_then_success(self, failure):
+        provider, _sleeps, calls = self._scripted(
+            [failure, httpx.Response(200, text=_sse("ok"))], max_retries=3
+        )
+        assert self._stream(provider) == ["ok"]
+        assert calls() == 2
+
+    @pytest.mark.parametrize("status", [408, 425, 429, 500, 502, 503, 504])
+    def test_retryable_status_then_success(self, status):
+        provider, _sleeps, calls = self._scripted(
+            [httpx.Response(status, text="busy"), httpx.Response(200, text=_sse("ok"))],
+            max_retries=3,
+        )
+        assert self._stream(provider) == ["ok"]
+        assert calls() == 2
+
+    @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+    def test_deterministic_client_error_is_not_retried(self, status):
+        """A bad key or model returns the same on every retry."""
+        provider, sleeps, calls = self._scripted(
+            [httpx.Response(status, text="nope")], max_retries=3
+        )
+
+        with pytest.raises(GenerationError, match=str(status)):
+            self._stream(provider)
+        assert calls() == 1, "must fail on the first attempt"
+        assert sleeps == [], "no backoff for a deterministic failure"
+
+    def test_midstream_failure_is_never_retried(self):
+        """The user is already reading; a retry would duplicate or stall it.
+
+        This is the whole reason the setting was off by default. A frame that
+        arrives and then breaks leaves `delivered` set, so the error propagates.
+        """
+        provider, sleeps, calls = self._scripted(
+            [_sse_then_break("partial")],
+            max_retries=3,
+        )
+
+        chunks: list[str] = []
+        with pytest.raises(GenerationError, match="ReadError"):
+            for delta in provider.stream(
+                [{"role": "user", "content": "hi"}], model="m", max_tokens=16
+            ):
+                chunks.append(delta)
+
+        assert chunks == ["partial"], "what was delivered before the break is kept"
+        assert calls() == 1, "a mid-stream failure must not re-send the request"
+        assert sleeps == [], "and must not back off"
+
+    def test_retries_are_bounded(self):
+        provider, sleeps, calls = self._scripted(
+            [self._server_error() for _ in range(10)], max_retries=3
+        )
+
+        with pytest.raises(GenerationError, match="503"):
+            self._stream(provider)
+        assert calls() == 4, "the first attempt plus exactly max_retries"
+        assert len(sleeps) == 3, "a backoff between attempts, not after the last"
+
+    def test_default_of_zero_retries_makes_exactly_one_attempt(self):
+        """`groq_max_retries` defaults to 0, and 0 must mean no retry at all."""
+        provider, sleeps, calls = self._scripted([self._server_error() for _ in range(5)])
+
+        with pytest.raises(GenerationError, match="503"):
+            self._stream(provider)
+        assert calls() == 1
+        assert sleeps == []
+
+    def test_backoff_matches_the_embedding_policy(self):
+        """Both providers share `app.providers.retry`, so the schedule is identical.
+
+        Asserted against the same expected sequence the embedding tests use, which
+        is the point: a drift in one provider breaks this.
+        """
+        # max_retries=4 means 5 attempts, hence 4 backoffs. `attempt` is 0-based at
+        # the first failure, and jitter=0 sits at the floor: half of each ceiling.
+        provider, sleeps, _calls = self._scripted(
+            [self._server_error() for _ in range(10)], max_retries=4
+        )
+        with pytest.raises(GenerationError):
+            self._stream(provider)
+        assert sleeps == [0.25, 0.5, 1.0, 2.0], "jitter=0 floor: half of each ceiling"
+
+    def test_retry_never_leaks_the_key_or_body(self):
+        body = '{"error":"gsk_secret upstream detail"}'
+        provider, _sleeps, _calls = self._scripted(
+            [httpx.Response(503, text=body) for _ in range(3)], max_retries=2
+        )
+        with pytest.raises(GenerationError) as exc:
+            self._stream(provider)
+
+        message = str(exc.value)
+        assert "503" in message
+        assert "gsk_secret" not in message, "NFR-5: the key must not be echoed"
+        assert "upstream detail" not in message, "NFR-5: the body must not be echoed"
+
+    def test_a_successful_stream_is_untouched(self):
+        provider, sleeps, calls = self._scripted(
+            [httpx.Response(200, text=_sse("a", "b", "c"))], max_retries=3
+        )
+        assert self._stream(provider) == ["a", "b", "c"]
+        assert calls() == 1
+        assert sleeps == [], "a healthy stream must not pay any backoff"
 
     def test_missing_key_fails_at_construction(self):
         """A missing key is a startup fault, not a 503 discovered by a user."""

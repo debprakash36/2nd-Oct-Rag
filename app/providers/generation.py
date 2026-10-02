@@ -25,7 +25,9 @@ claim about answer quality is made.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+import random
+import time
+from collections.abc import Callable, Iterator
 from functools import lru_cache
 
 import httpx
@@ -37,6 +39,7 @@ from app.generation.prompt import parse_context_block
 from app.generation.sentences import split_sentences
 from app.ingest.keyword import tokenize
 from app.providers.base import GenerationProvider
+from app.providers.retry import RETRYABLE_STATUS_CODES, backoff_seconds
 
 log = get_logger("app.providers.generation")
 
@@ -160,6 +163,12 @@ class GroqGenerationProvider:
     duplicate what they have read or stall a half-delivered answer. A connection
     that fails *before* any delta is safe to retry, and that is the only case
     `groq_max_retries` covers.
+
+    That constraint is enforced by tracking whether a delta has been yielded. The
+    retry decision is made inside the same generator that yields, so "has the user
+    seen anything yet?" is answerable rather than guessed: once one delta is out,
+    the next transport error propagates immediately. Retrying by wrapping `stream()`
+    from outside would not be able to tell the two cases apart.
     """
 
     def __init__(
@@ -169,6 +178,8 @@ class GroqGenerationProvider:
         base_url: str,
         timeout: float,
         max_retries: int,
+        sleep: Callable[[float], None] = time.sleep,
+        jitter: Callable[[], float] = random.random,
     ) -> None:
         if not api_key:
             # Raised at construction rather than at the first request: a missing key
@@ -181,7 +192,12 @@ class GroqGenerationProvider:
         self._api_key = api_key
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         self._timeout = timeout
-        self._max_retries = max_retries
+        # `groq_max_retries` counts *retries*, not attempts, so 0 means one attempt
+        # and the default really is "no retry" -- see the config comment.
+        self._max_retries = max(0, max_retries)
+        # Injected so tests can assert the backoff schedule without sleeping it out.
+        self._sleep = sleep
+        self._jitter = jitter
         # Injectable transport seam; see the note on the embedding provider's
         # equivalent. The real streaming client is built per call, because a
         # `client.stream` context cannot outlive the generator that yields from it.
@@ -207,25 +223,88 @@ class GroqGenerationProvider:
             "Content-Type": "application/json",
         }
 
-        try:
-            with (
-                self._client_factory(timeout=self._timeout) as client,
-                client.stream("POST", self._url, json=payload, headers=headers) as response,
-            ):
-                if response.status_code != 200:
-                    # Status only. The body of a provider error can echo the
-                    # request, and this message reaches a log and potentially an
-                    # operator's terminal (NFR-5).
-                    response.read()
+        attempt = 0
+        while True:
+            delivered = False  # has any delta reached the caller on this attempt?
+            try:
+                with (
+                    self._client_factory(timeout=self._timeout) as client,
+                    client.stream("POST", self._url, json=payload, headers=headers) as response,
+                ):
+                    if response.status_code != 200:
+                        # Status only. The body of a provider error can echo the
+                        # request, and this message reaches a log and potentially an
+                        # operator's terminal (NFR-5).
+                        response.read()
+                        if (
+                            response.status_code not in RETRYABLE_STATUS_CODES
+                            or attempt >= self._max_retries
+                        ):
+                            raise GenerationError(
+                                f"groq returned HTTP {response.status_code} for model "
+                                f"{model!r}; check GROQ_API_KEY and the model name"
+                            )
+                        delay = self._backoff(attempt)
+                        # No URL, no body, no headers: NFR-5.
+                        log.warning(
+                            "groq attempt failed before streaming began; retrying",
+                            extra={
+                                "attempt": attempt + 1,
+                                "max_retries": self._max_retries,
+                                "delay_seconds": round(delay, 3),
+                                "status": response.status_code,
+                            },
+                        )
+                        self._sleep(delay)
+                        attempt += 1
+                        continue
+
+                    for delta in self._deltas(response):
+                        # Set *before* the yield resumes, so a transport error on the
+                        # next frame is correctly seen as mid-stream.
+                        delivered = True
+                        yield delta
+                    return
+            except httpx.TransportError as exc:
+                # Retried only while nothing has been delivered. After the first
+                # delta this propagates: the user is already reading text, and a
+                # retry would duplicate or stall it.
+                if delivered or attempt >= self._max_retries:
                     raise GenerationError(
-                        f"groq returned HTTP {response.status_code} for model "
-                        f"{model!r}; check GROQ_API_KEY and the model name"
-                    )
-                yield from self._deltas(response)
-        except httpx.HTTPError as exc:
-            raise GenerationError(
-                f"groq request failed: {type(exc).__name__}"
-            ) from exc
+                        f"groq request failed: {type(exc).__name__}"
+                    ) from exc
+                delay = self._backoff(attempt)
+                log.warning(
+                    "groq attempt failed before streaming began; retrying",
+                    extra={
+                        "attempt": attempt + 1,
+                        "max_retries": self._max_retries,
+                        "delay_seconds": round(delay, 3),
+                        "reason": type(exc).__name__,
+                    },
+                )
+                self._sleep(delay)
+                attempt += 1
+                continue
+            except httpx.HTTPError as exc:
+                # Not a transport fault (a malformed response, a bad URL). Repeating
+                # it returns the same thing, so it is wrapped and raised at once.
+                raise GenerationError(
+                    f"groq request failed: {type(exc).__name__}"
+                ) from exc
+
+    def _backoff(self, attempt: int) -> float:
+        """Seconds to wait before the next attempt. Policy in `app.providers.retry`.
+
+        Identical to the embedding provider's, deliberately -- one policy module, so
+        the two providers cannot drift apart.
+
+        `attempt` here is 0-based (the count of failures so far), so it is shifted by
+        one before reaching the policy. The embedding provider's loop is 1-based and
+        passes its counter straight through; without this shift the two providers
+        would start their schedules one step apart while still sharing the constants.
+        """
+        return backoff_seconds(attempt + 1, jitter=self._jitter)
 
     def _deltas(self, response: object) -> Iterator[str]:
         """Yield the `content` of each SSE `data:` frame, lazily.
