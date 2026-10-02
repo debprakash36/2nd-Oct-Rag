@@ -389,21 +389,30 @@ class TestFakeProvidersAreRefusedInProduction:
         )
         ok.validate_production()  # must not raise
 
-    def test_the_defaults_are_rejected_as_configured(self):
+    def test_the_defaults_are_rejected_as_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Unset means fake, so a deploy that sets nothing is refused.
 
         This is the realistic failure: someone sets `ENVIRONMENT=production` and
         `DATABASE_URL`, checks that the process starts, and ships without touching
         the provider variables because nothing forced them to.
+
+        The constructor must not see the developer's `.env` or process env: those
+        are a configured machine, not "the defaults as coded".
         """
         from app.core.config import Settings
+
+        for key in (
+            "EMBEDDING_PROVIDER",
+            "GENERATION_PROVIDER",
+            "EMBEDDING_MODEL",
+            "API_TOKEN",
+        ):
+            monkeypatch.delenv(key, raising=False)
 
         prod = Settings(
             environment="production",
             database_url="postgresql+psycopg://rag:rag@localhost:5432/rag",
             vector_store="pgvector",
-            # Ignore the developer's .env. These three are omitted on purpose so
-            # they take the module defaults (fake), which a real deploy must reject.
             _env_file=None,
         )
         assert prod.embedding_provider == "fake"

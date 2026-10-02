@@ -26,11 +26,11 @@ from app.api import (
     health,
     pilot,
 )
+from app.core.auth import AuthMiddleware
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
 from app.core.guardrails import RateLimitExceeded
 from app.core.logging import configure_logging, get_logger
-from app.core.auth import AuthMiddleware
 from app.core.middleware import TraceIdMiddleware
 from app.db.session import create_all, get_engine, get_session_factory
 

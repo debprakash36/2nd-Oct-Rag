@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.db.models import Document
 from app.retrieval.retriever import RetrievalConfig, Retriever
+from app.retrieval.types import RetrievalResult
 
 NOISE_FLOOR = 1e-6
 STRONG_SIGNAL = 0.05
@@ -56,7 +57,7 @@ def diagnose(session: Session, query: str, settings: Settings) -> Diagnosis:
     base = RetrievalConfig.from_settings(settings)
     threshold = base.score_threshold
 
-    def run(config: RetrievalConfig):
+    def run(config: RetrievalConfig) -> RetrievalResult:
         return Retriever(session, settings=settings, config=config).retrieve(query)
 
     production = run(base)

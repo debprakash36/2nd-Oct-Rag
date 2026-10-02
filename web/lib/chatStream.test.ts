@@ -159,6 +159,8 @@ describe("streamChat", () => {
       message: "Sign in required.",
     });
   });
+
+  it("maps a 429 to rate_limited", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>

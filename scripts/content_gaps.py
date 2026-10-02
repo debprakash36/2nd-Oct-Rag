@@ -54,13 +54,13 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from app.core.config import get_settings  # noqa: E402
 from app.db.session import session_scope  # noqa: E402
-from app.pilot.gaps import (  # noqa: E402
-    Diagnosis,
-    NOISE_FLOOR,
-    STRONG_SIGNAL,
-    diagnose,
-    _best_score,
-)
+from app.pilot import gaps as _gaps  # noqa: E402
+
+Diagnosis = _gaps.Diagnosis
+NOISE_FLOOR = _gaps.NOISE_FLOOR
+STRONG_SIGNAL = _gaps.STRONG_SIGNAL
+_best_score = _gaps._best_score
+diagnose = _gaps.diagnose
 
 
 def queries_from_log(limit: int) -> list[tuple[str, str]]:

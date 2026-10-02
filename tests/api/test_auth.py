@@ -29,6 +29,18 @@ def test_rejects_a_missing_or_wrong_token(client: TestClient, settings_env: Sett
     assert ok.status_code == 200
 
 
+def test_pilot_metrics_are_gated_when_a_token_is_set(
+    client: TestClient, settings_env: Settings
+) -> None:
+    settings_env.api_token = "correct-token"
+    blocked = client.get("/admin/pilot/metrics")
+    assert blocked.status_code == 401
+    ok = client.get(
+        "/admin/pilot/metrics", headers={"Authorization": "Bearer correct-token"}
+    )
+    assert ok.status_code == 200
+
+
 def test_login_accepts_only_the_configured_token(
     client: TestClient, settings_env: Settings
 ) -> None:

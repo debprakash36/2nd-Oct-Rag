@@ -13,68 +13,17 @@ Severity is about impact on a deployment, not about how hard the code is to chan
 
 ---
 
-## 1. `/health` reports "ok" on a corpus retrieval cannot search
+## 1. Mixed-dimension vectors in a local `rag.db` (health probe is fixed)
 
-**Severity: blocking. This is the most dangerous item on this page.**
+**Severity: blocking for that database file. The `/health` blind spot is closed.**
 
-`rag.db` contains 11 chunks whose stored vector is 64-dimensional while the query
-embedding is 384. Any retrieval against it raises:
+`measure_divergence(..., dim=settings.embedding_dim)` counts wrong-width vectors.
+`/health` returns 503 with `status: degraded` when any live chunk's stored width
+does not match `EMBEDDING_DIM`. Regression:
+`tests/retrieval/test_vector_store_selection.py::TestHealthReportsAMalformedCorpus`.
 
-```
-ValueError: embedding dimension mismatch for chunk 035b17089843476b97ef5121c9553919:
-stored 64, query 384
-```
-
-The same query against the clean copy returns 3 candidates and does not abstain.
-
-`/health` on that same `rag.db` returns:
-
-```json
-{"status":"ok","checks":{"database":"ok","vector_store":"ok","keyword_index":"ok",
- "vector_index":"308/308 live chunks","environment":"local","embedding_dim":384}}
-```
-
-`status: ok`, and `308/308` — implying every chunk is retrievable when 11 cannot be.
-
-**Why it happens.** `measure_divergence()` in `app/retrieval/vector_store.py` compares
-only *counts*:
-
-```python
-sql_chunks = live_chunk_count(session)
-return IndexDivergence(sql_chunks=sql_chunks, store_chunks=store.count())
-```
-
-`live_chunk_count()` filters on document state and never inspects vector dimension. The
-SQL store returns the same 308 the count query sees, so the two agree and divergence is
-reported as zero. A corpus can be uniformly wrong in a way a count cannot detect.
-
-This defeats the stated purpose of the check. `app/api/health.py` documents the probe as
-existing because "the store answered a count query" and "the store can return results"
-are different questions — but dimension is a third question that neither answers.
-
-**Repro.**
-
-```powershell
-$env:DATABASE_URL="sqlite:///rag.db"; $env:VECTOR_STORE="sqlite"; $env:EMBEDDING_DIM="384"
-python -c "from app.db.session import get_session_factory; from app.core.config import get_settings; from app.retrieval.retriever import Retriever; s=get_settings(); sf=get_session_factory(s); sess=sf(); Retriever(sess).retrieve('escalation policy')"
-# -> ValueError: embedding dimension mismatch
-```
-
-**Fix.** Have the health probe compare a stored vector's dimension against
-`settings.embedding_dim`, and treat a mismatch as `is_empty`-class failure — unhealthy,
-not merely stale. A count cannot stand in for this.
-
-Worth noting what the test suite already covers, because it shows the gap is narrow and
-specific rather than general: dimension mismatch **is** tested at the store level
-(`tests/retrieval/test_vector_store.py`, `test_chroma_store.py` — "fail on dimension
-mismatch, never score silently wrong"), and `/health` is exercised incidentally in
-`test_cors.py` and `test_admin_documents.py`. But nothing asserts that a dimension
-mismatch makes `/health` unhealthy, and every divergence test in
-`test_vector_store_selection.py` moves a *count*. A regression test that seeds one
-short-vector chunk and asserts a 503 would close this.
-
-**Relation to item 2.** Fixing the data (item 2) removes the current instance. It does
-not remove the blind spot, so a future bad ingest can recreate this silently.
+A copy of `rag.db` can still hold mixed 64-dim / 384-dim rows (item 2). The probe
+now reports that instead of `ok`. Re-embed with `scripts/reembed_chunks.py`.
 
 ---
 
@@ -108,19 +57,19 @@ strictly worse than the current honest failure.
 
 ---
 
-## 3. No authentication on any endpoint
+## 3. Authentication is a shared secret, not per-user accounts
 
-**Severity: blocking for a public deployment.**
+**Severity: blocking for a public deployment if `API_TOKEN` is left empty locally.
+Staging/production refuse to boot without it.**
 
-Every endpoint is unauthenticated, including `/admin/documents`, which uploads **and
-deletes** documents. A public URL is an open delete button.
+`AuthMiddleware` requires `Authorization: Bearer <API_TOKEN>` on every route except
+`/health`, `/auth/status`, and `/auth/login`. The web UI stores the token in
+`sessionStorage` and sends it on `apiFetch` and `/chat/stream`. An empty token still
+leaves the API open so tests and a fresh checkout work; `validate_production()`
+rejects that combination in staging and production.
 
-`docs/implementation.md` records this as a deliberate scope decision for local use. It
-becomes a vulnerability the moment the service is reachable by anyone else.
-
-**If deploying to Render:** set services to **Private**, or add authorization first.
-`allow_credentials=False` in the CORS setup is not a mitigation — it is unrelated to
-authentication, and the comment next to it says so.
+This is a single operator secret, not user accounts or roles. Admin upload/delete
+and the pilot console share it. Do not put the value in `NEXT_PUBLIC_*`.
 
 ---
 
@@ -171,30 +120,18 @@ not a script.
 
 ---
 
-## 6. Threshold and model defaults are fake in every checked-in path
+## 6. Fake provider defaults are for local/test only
 
-**Severity: degraded if deployed accidentally.**
+**Severity: closed at startup for staging/production. Still the local default.**
 
-`EMBEDDING_PROVIDER`, `GENERATION_PROVIDER`, and `EMBEDDING_MODEL` all default to fake
-values in `app/core/config.py`:
+`EMBEDDING_PROVIDER`, `GENERATION_PROVIDER`, and `EMBEDDING_MODEL` still default to
+fake values so tests and a fresh checkout stay offline. `validate_production()`
+rejects `fake` providers, a `fake-*` embedding model name, sqlite, and an empty
+`API_TOKEN` when `ENVIRONMENT` is staging or production.
 
-```python
-embedding_provider: Literal["fake", "huggingface"] = "fake"
-embedding_model: str = "fake-embed-v1"
-generation_provider: Literal["fake", "groq"] = "fake"
-```
-
-Nothing rejects `fake` when `ENVIRONMENT=production`. A deploy that forgets
-`EMBEDDING_PROVIDER` and `GENERATION_PROVIDER` starts, answers from fixtures, and
-produces quality numbers that look real. The recorded baseline recall of 0.892 is from
-fake embeddings on a 113-document synthetic corpus and is **not** a production-quality
-measurement — on the same corpus with `all-MiniLM-L6-v2` it is **0.8378**, still below
-the 0.85 target. **0.8378 is the first real baseline**; the gate itself is **to be set
-from pilot traffic**, since this eval set is lexically biased (templates quote document
-titles and scopes verbatim) and flatters a bag-of-words vectoriser.
-
-`validate_production()` already blocks sqlite in production. Rejecting fake providers
-there is the same shape of check and would close this.
+The recorded baseline recall of 0.892 was from fake embeddings and is not a
+production-quality measurement. On the same corpus with `all-MiniLM-L6-v2` it is
+**0.8378**. The gate itself is still to be set from pilot traffic.
 
 ---
 

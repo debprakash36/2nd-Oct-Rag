@@ -859,6 +859,10 @@ python scripts/pilot_metrics.py
 python scripts/pilot_metrics.py --min-samples 30 --json
 ```
 
+The admin **Pilot** page (`/admin/pilot`) is an ops view of these three scripts.
+It is extra surface, not a Phase 6 requirement. It must not display PASS for an
+UNMEASURED metric.
+
 **Current state: all four traffic metrics are UNMEASURED.** `query_logs` holds 6 rows
 across 2 distinct queries — local test residue, not a pilot. The exit gate for this
 phase is genuinely outstanding and cannot be closed by tooling; it needs a real

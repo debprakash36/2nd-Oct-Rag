@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.core.guardrails import reset_rate_limiter
+from app.db.conversation import append_turn
 from app.db.models import QueryLog, Turn, TurnRole
 
 
@@ -265,15 +266,24 @@ class TestHistoryReachesThePipeline:
         assert "how long do I have?" not in history
 
     def test_retrieval_memory_window_is_ten_user_questions(
-        self, client: TestClient, live_doc, settings_env, monkeypatch
+        self, client: TestClient, live_doc, session: Session, settings_env, monkeypatch
     ):
         """Retrieval sees the last 10 user questions, not the prompt window."""
         monkeypatch.setattr(settings_env, "retrieval_threshold", 0.0, raising=False)
         monkeypatch.setattr(settings_env, "retrieval_memory_turns", 10, raising=False)
         monkeypatch.setattr(settings_env, "chat_history_turns", 4, raising=False)
+        monkeypatch.setattr(settings_env, "generation_provider", "fake", raising=False)
         cid = client.post("/conversations").json()["conversation_id"]
+        # Seeded in the store rather than through /chat/stream: the window is a
+        # read of persisted user turns, and twelve live generations only burn quota.
         for i in range(12):
-            _ask(client, f"question number {i} about refunds", cid)
+            append_turn(
+                session,
+                cid,
+                role=TurnRole.USER,
+                content=f"question number {i} about refunds",
+            )
+        session.commit()
 
         captured: dict[str, object] = {}
         import app.retrieval.retriever as retriever_module
