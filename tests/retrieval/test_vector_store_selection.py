@@ -45,7 +45,7 @@ def _embed(seed: int, dim: int = 384) -> list[float]:
     return vector
 
 
-def _seed_live_chunks(session: Session, n: int) -> list[str]:
+def _seed_live_chunks(session: Session, n: int, dim: int = 384) -> list[str]:
     """Write `n` live, embedded chunks straight to `Chunk`.
 
     Bypasses ingestion deliberately: these tests are about what the selection and
@@ -71,7 +71,7 @@ def _seed_live_chunks(session: Session, n: int) -> list[str]:
                 doc_id="d1",
                 chunk_index=i,
                 text=f"chunk {i}",
-                embedding=_embed(i),
+                embedding=_embed(i, dim=dim),
                 token_count=3,
                 # `char_start`/`char_end` are NOT NULL; values are irrelevant here
                 # because nothing in the selection or divergence path reads them.
@@ -284,3 +284,169 @@ class TestChromaCountTracksTheCollection:
         assert store.count() == 0
         assert live_chunk_count(session) == 3
         assert measure_divergence(session, store).missing == 3
+
+
+class TestDimensionMismatchIsSurfaced:
+    """A count cannot tell you whether the vectors can be scored.
+
+    The blind spot this pins: `rag.db` carried 11 of 308 chunks at 64 dimensions
+    against a 384-dimensional query embedding. `/health` reported
+    `308/308 live chunks` and `status: ok`, because both SQL-backed stores count
+    from the same table they read, so the two numbers agreed perfectly on a corpus
+    where every query raised `ValueError: embedding dimension mismatch`.
+
+    A healthy-looking health check on an unsearchable corpus is the failure worth
+    writing down: the operator has been told everything is fine, and the only
+    evidence to the contrary arrives as a user-facing refusal.
+    """
+
+    def _rewrite_one_chunk_width(self, session: Session, dim: int) -> str:
+        """Rewrite one live chunk's embedding to the wrong width.
+
+        Done by direct UPDATE rather than by seeding, because the realistic cause is
+        a *partially* re-embedded corpus: rows written by a different model version
+        sitting beside rows written by the current one. A whole-corpus wrong width is
+        a different bug and would be caught by any dimension check at all.
+        """
+        from app.db.models import Chunk
+
+        victim = session.query(Chunk).filter(Chunk.embedding.is_not(None)).first()
+        assert victim is not None, "expected at least one seeded chunk"
+        victim.embedding = _embed(0, dim=dim)
+        session.commit()
+        return victim.chunk_id
+
+    def test_counts_a_chunk_whose_width_disagrees(self, session: Session, settings_env):
+        from app.retrieval.vector_store import measure_dimension_mismatches
+
+        _seed_live_chunks(session, n=5, dim=64)
+        assert measure_dimension_mismatches(session, 64) == 0
+
+        self._rewrite_one_chunk_width(session, dim=16)
+        assert measure_dimension_mismatches(session, 64) == 1
+
+    def test_matching_width_is_not_flagged(self, session: Session, settings_env):
+        """The check must not fire on a healthy corpus, or it is noise."""
+        from app.retrieval.vector_store import measure_dimension_mismatches
+
+        _seed_live_chunks(session, n=5, dim=64)
+        assert measure_dimension_mismatches(session, 64) == 0
+
+    def test_a_chunk_with_no_embedding_is_not_counted(
+        self, session: Session, settings_env
+    ):
+        """NULL is not a dimension mismatch.
+
+        The search path skips these, so counting them would report a fault against
+        a corpus that retrieves fine.
+        """
+        from app.db.models import Chunk
+        from app.retrieval.vector_store import measure_dimension_mismatches
+
+        _seed_live_chunks(session, n=3, dim=64)
+        chunk = session.query(Chunk).filter(Chunk.embedding.is_not(None)).first()
+        chunk.embedding = None
+        session.commit()
+
+        assert measure_dimension_mismatches(session, 64) == 0
+
+    def test_divergence_carries_the_mismatch_count(
+        self, session: Session, settings_env: Settings
+    ):
+        """Counts agreeing must not be reported as healthy when widths disagree."""
+        _seed_live_chunks(session, n=8, dim=64)
+        self._rewrite_one_chunk_width(session, dim=16)
+
+        store = build_vector_store(session, settings_env)
+        divergence = measure_divergence(session, store, dim=64)
+
+        # The part that was true before the fix and hid the bug: counts agree.
+        assert divergence.sql_chunks == divergence.store_chunks == 8
+        assert not divergence.is_empty
+        assert not divergence.is_stale
+        # The part that was missing.
+        assert divergence.mismatched_dims == 1
+        assert divergence.is_malformed
+
+    def test_a_malformed_corpus_is_not_merely_stale(self, session: Session, settings_env):
+        """The two are different faults with different remedies.
+
+        A stale index is fixed by re-projecting. A wrong-width vector cannot be
+        re-projected into working order; it has to be re-embedded. Collapsing them
+        would let a corpus that needs re-embedding look like one that needs a sync.
+        """
+        _seed_live_chunks(session, n=4, dim=64)
+        self._rewrite_one_chunk_width(session, dim=16)
+
+        divergence = IndexDivergence(sql_chunks=4, store_chunks=4, mismatched_dims=1)
+        assert divergence.is_malformed
+        assert not divergence.is_stale
+        assert not divergence.is_empty
+
+    def test_summary_names_the_mismatch(self):
+        """`308/308 live chunks` must not be the whole story any more."""
+        text = IndexDivergence(sql_chunks=308, store_chunks=308, mismatched_dims=11).summary()
+        assert "308/308 live chunks" in text
+        assert "11" in text
+        assert "dimension" in text
+
+    def test_summary_is_unchanged_for_a_healthy_corpus(self):
+        assert IndexDivergence(sql_chunks=304, store_chunks=297).summary() == (
+            "297/304 live chunks"
+        )
+
+    def test_omitting_dim_keeps_the_old_behaviour(self, session: Session, settings_env):
+        """`dim` is optional so existing count-only callers keep working."""
+        _seed_live_chunks(session, n=5, dim=64)
+        self._rewrite_one_chunk_width(session, dim=16)
+
+        store = build_vector_store(session, settings_env)
+        divergence = measure_divergence(session, store)
+        assert divergence.mismatched_dims == 0
+
+
+class TestHealthReportsAMalformedCorpus:
+    """`/health` must 503, not merely print a number nobody reads."""
+
+    def test_a_short_vector_chunk_makes_health_unhealthy(
+        self, session: Session, settings_env: Settings, client
+    ):
+        """The regression test for the reported bug.
+
+        Seeds one short-vector chunk on top of a corpus that is otherwise fine and
+        asserts the endpoint returns 503. Before the fix this returned 200 with
+        `status: ok`, while retrieval over the same data raised.
+        """
+        from app.db.models import Chunk
+
+        _seed_live_chunks(session, n=5, dim=64)
+        session.commit()
+
+        # Sanity: the corpus is healthy before the damage.
+        healthy = client.get("/health")
+        assert healthy.status_code == 200, healthy.json()
+        assert healthy.json()["status"] == "ok"
+
+        victim = session.query(Chunk).filter(Chunk.embedding.is_not(None)).first()
+        victim.embedding = _embed(0, dim=8)
+        session.commit()
+
+        degraded = client.get("/health")
+        assert degraded.status_code == 503, degraded.json()
+        body = degraded.json()
+        assert body["status"] == "degraded"
+        # The count is still reported, with the reason attached, so an operator
+        # reading the response can tell this apart from an empty index.
+        assert "dimension" in body["checks"]["vector_index"]
+        assert "re-embedding" in body["checks"]["vector_index"]
+
+    def test_a_healthy_corpus_still_returns_200(
+        self, session: Session, settings_env: Settings, client
+    ):
+        """The check must not turn every deployment unhealthy."""
+        _seed_live_chunks(session, n=5, dim=64)
+        session.commit()
+
+        response = client.get("/health")
+        assert response.status_code == 200, response.json()
+        assert response.json()["status"] == "ok"

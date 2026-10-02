@@ -66,6 +66,15 @@ services:
       # meaningless. Both keys are required for a real deployment.
       - key: EMBEDDING_PROVIDER
         value: huggingface
+      # Named explicitly, and it has to be: the app's default is "fake-embed-v1",
+      # which belongs to the offline provider. Left unset, `validate_production`
+      # refuses to start, because a real provider paired with a fake model name
+      # would send "fake-embed-v1" to the API as a model and fail on first query
+      # rather than at deploy. This model is a real 384-dimension feature-extraction
+      # model, matching EMBEDDING_DIM above -- a mismatch there is caught by
+      # /health, but only after the corpus has already been embedded wrong.
+      - key: EMBEDDING_MODEL
+        value: sentence-transformers/all-MiniLM-L6-v2
       - key: HF_TOKEN
         sync: false
       - key: GENERATION_PROVIDER

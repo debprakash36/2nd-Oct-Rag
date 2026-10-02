@@ -35,7 +35,9 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast, runtime_checkable
 
 from sqlalchemy import Select, func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.errors import StoreUnavailableError
 from app.db.models import Chunk, Document, DocumentState
@@ -111,10 +113,17 @@ class IndexDivergence:
     where the configured backend and the data on disk disagree and neither says so:
     a populated `data/chroma` beside a process serving from SQL reads as "the index
     is in use" and is not.
+
+    `mismatched_dims` counts live chunks whose stored vector is not the configured
+    width. It is a third question alongside the two counts: a store can hold exactly
+    as many vectors as SQL says and still be unable to score a single one of them,
+    because the widths disagree. That is a different failure from a stale count and
+    neither count can detect it -- see `measure_dimension_mismatches`.
     """
 
     sql_chunks: int
     store_chunks: int
+    mismatched_dims: int = 0
 
     @property
     def missing(self) -> int:
@@ -132,11 +141,29 @@ class IndexDivergence:
         return self.store_chunks == 0 and self.sql_chunks > 0
 
     @property
+    def is_malformed(self) -> bool:
+        """Some stored vectors are the wrong width, so scoring them is impossible.
+
+        Distinct from `is_stale`. A derived index being behind is the expected state
+        after any corpus change and the remedy is to re-project. A wrong-width vector
+        cannot be re-projected into working order -- it has to be re-embedded, and
+        until it is, every query that touches it raises rather than ranking it. So
+        this is a fault, not a warning.
+        """
+        return self.mismatched_dims > 0
+
+    @property
     def is_stale(self) -> bool:
         return self.missing > 0
 
     def summary(self) -> str:
-        return f"{self.store_chunks}/{self.sql_chunks} live chunks"
+        base = f"{self.store_chunks}/{self.sql_chunks} live chunks"
+        if self.mismatched_dims:
+            # Named in the health response rather than logged separately, because a
+            # reader looking at "308/308 live chunks" needs to see *here* that the
+            # count agreeing does not mean the corpus is searchable.
+            return f"{base}, {self.mismatched_dims} with the wrong embedding dimension"
+        return base
 
 
 def live_chunk_count(session: Session) -> int:
@@ -160,15 +187,110 @@ def live_chunk_count(session: Session) -> int:
     )
 
 
-def measure_divergence(session: Session, store: VectorStore) -> IndexDivergence:
+def measure_dimension_mismatches(session: Session, dim: int) -> int:
+    """Live chunks whose stored vector is not `dim` wide.
+
+    A count, not a per-chunk report. The caller needs to know whether *any* row
+    would break a search, and naming one chunk_id out of thousands is not more
+    actionable than saying how many are affected -- `Chunk.chunk_id` is enough to
+    find them, and the ingest side owns the repair.
+
+    **This is the question a count query cannot answer.** `live_chunk_count` counts
+    rows; the two SQL-backed stores return that same number from the same table, so
+    divergence reads as zero on a corpus where every single vector is the wrong
+    width. That is not hypothetical: `rag.db` carries 11 of 308 chunks at 64 dims
+    against a 384-dim query embedding, `/health` reported `308/308 live chunks`, and
+    every retrieval raised `ValueError: embedding dimension mismatch`. A count
+    answers "how many"; only this answers "can they be scored".
+
+    Dialect handling, because the two backends cannot express this the same way:
+
+    * Postgres stores `vector(N)`, and pgvector *refuses* an insert of the wrong
+      width -- the column type enforces it. A mismatch there means the column was
+      altered out from under the data, which is worth knowing, so the check still
+      runs via `vector_dims()` rather than being assumed away.
+    * SQLite stores a JSON blob with no width constraint, which is how 64-dim rows
+      got next to 384-dim ones at all. `json_array_length` reads the width back.
+
+    Unreadable rows (NULL embedding, malformed JSON) are excluded from the count and
+    are not this function's problem: a row with no embedding is skipped by the search
+    path anyway, and a row that fails to parse surfaces as its own error there.
+
+    **The NULL filter is not redundant.** SQLAlchemy's JSON type does not store a
+    Python `None` as SQL NULL -- it serialises it to the JSON literal `'null'`, which
+    is a non-NULL text value. `json_array_length('null')` returns 0 rather than NULL,
+    so such a row reads as "0 dimensions wide" and would be counted as a mismatch
+    against any positive `dim`. That is a row the search path skips entirely, so
+    counting it would report a fault on a healthy corpus. `json_type(...) = 'array'`
+    excludes it, and anything else unparseable, in one condition.
+    """
+    bind = session.get_bind()
+    dialect = bind.dialect.name if bind is not None else ""
+
+    # Annotated because the two branches produce unrelated expression types (a
+    # `BinaryExpression` from a JSON comparison vs. the negation of a column), and
+    # mypy infers the type from the first assignment only.
+    readable: ColumnElement[bool]
+    width: ColumnElement[int | None]
+
+    if dialect == "postgresql":
+        # pgvector enforces the declared width on write, so a stored `vector(384)`
+        # column cannot hold a 64-element vector; the type alone is the guarantee.
+        width = func.vector_dims(Chunk.embedding)
+        readable = Chunk.embedding.is_not(None)
+    else:
+        width = func.json_array_length(Chunk.embedding)
+        # `json_type` returns 'null' for the JSON literal, 'array' for a vector, and
+        # NULL for SQL NULL -- so this covers both the Python-None case and a
+        # malformed value, which would otherwise raise inside json_array_length.
+        readable = func.json_type(Chunk.embedding) == "array"
+
+    try:
+        return int(
+            session.execute(
+                select(func.count())
+                .select_from(Chunk)
+                .join(Document, Document.doc_id == Chunk.doc_id)
+                .where(
+                    Document.state == DocumentState.LIVE,
+                    readable,
+                    width != dim,
+                )
+            ).scalar_one()
+        )
+    except SQLAlchemyError:
+        # A dialect without either function, or a column type that cannot be
+        # measured. Returning 0 keeps this a non-fatal diagnostic rather than
+        # turning a health check into an outage; the search path still raises on
+        # the actual mismatch, so this cannot hide a fault that matters -- it only
+        # means this particular probe could not run.
+        log.warning(
+            "could not measure embedding dimensions; skipping the mismatch check",
+            exc_info=True,
+        )
+        return 0
+
+
+def measure_divergence(
+    session: Session, store: VectorStore, *, dim: int | None = None
+) -> IndexDivergence:
     """Compare what the configured store can answer against what SQL holds.
 
     Polymorphic rather than an `isinstance` check: the SQL-backed stores return the
     authoritative count from their shared base implementation, and the derived store
     overrides it. There is no branch here to get wrong when a fourth backend appears.
+
+    `dim` enables the width check. It is optional so that the existing count-only
+    callers keep working, and because a caller that has no configured width (the
+    dimension-check tests aside) has nothing to compare against.
     """
     sql_chunks = live_chunk_count(session)
-    return IndexDivergence(sql_chunks=sql_chunks, store_chunks=store.count())
+    mismatched = measure_dimension_mismatches(session, dim) if dim else 0
+    return IndexDivergence(
+        sql_chunks=sql_chunks,
+        store_chunks=store.count(),
+        mismatched_dims=mismatched,
+    )
 
 
 def assert_store_usable(session: Session, store: VectorStore) -> IndexDivergence:

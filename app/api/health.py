@@ -61,12 +61,30 @@ def _check_retrieval_stores(
     # find out. Empty makes the service unusable, so it drives the 503; merely
     # behind does not, because a derived index is stale by construction after any
     # corpus change (architecture.md 4.3).
+    #
+    # `dim` is passed so a wrong-width vector is caught here. Both counts can agree
+    # perfectly on a corpus that cannot be searched -- the SQL stores count from the
+    # same table they read -- so `308/308 live chunks` was reported as healthy while
+    # 11 of those chunks were 64-dim against a 384-dim query and every retrieval
+    # raised. See `measure_dimension_mismatches`.
     try:
         from app.retrieval.vector_store import build_vector_store, measure_divergence
 
-        divergence = measure_divergence(session, build_vector_store(session, settings))
+        divergence = measure_divergence(
+            session, build_vector_store(session, settings), dim=settings.embedding_dim
+        )
         checks["vector_index"] = divergence.summary()
         if divergence.is_empty:
+            usable = False
+        # Malformed rather than stale, so it drives the 503 like `is_empty` does.
+        # A stale index can still answer from the SQL side and degrades to whatever
+        # is already synced; a wrong-width vector raises on every query that reaches
+        # it, and the corpus is unsearchable until it is re-embedded.
+        elif divergence.is_malformed:
+            checks["vector_index"] = (
+                f"{divergence.summary()}; re-embedding required before retrieval "
+                f"can succeed"
+            )
             usable = False
     except AppError as exc:
         checks["vector_index"] = f"unavailable: {exc}"

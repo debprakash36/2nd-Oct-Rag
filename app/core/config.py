@@ -256,6 +256,45 @@ class Settings(BaseSettings):
                 "SqliteVectorStore is an O(n) full scan with no ANN index, kept for "
                 "local development and tests. Use 'pgvector', 'chroma', or 'auto'."
             )
+        # Same reasoning as the two checks above, applied to the model providers: a
+        # `fake` provider answers from a hash function or a canned fixture, so a
+        # deployment that forgot to set these starts cleanly, serves 200s, and
+        # produces retrieval and generation numbers that look like measurements but
+        # are not. That is worse than refusing to boot, because the evidence it
+        # manufactures survives into the Phase 6 pilot metrics (implementation.md
+        # §8.1a) -- an eval run against fake embeddings is what produced the 0.892
+        # recall@10 recorded as the baseline in docs/known_issues.md.
+        #
+        # Gated on the environment for the same reason as `vector_store`: tests and
+        # local runs are *supposed* to use `fake`, they are deterministic and free.
+        # Only a real deployment is a fault.
+        #
+        # `embedding_model` is checked as well as the provider, because the two can
+        # disagree. Switching EMBEDDING_PROVIDER to huggingface while leaving the
+        # default `fake-embed-v1` would pass a provider-only check and then send that
+        # string to the HuggingFace API as a model name.
+        if deployed and self.embedding_provider == "fake":
+            raise RuntimeError(
+                "embedding_provider must not be 'fake' in staging/production. "
+                "The fake provider returns deterministic fixtures, not embeddings, "
+                "so retrieval quality measured against it is meaningless. "
+                "Set EMBEDDING_PROVIDER=huggingface."
+            )
+        if deployed and self.generation_provider == "fake":
+            raise RuntimeError(
+                "generation_provider must not be 'fake' in staging/production. "
+                "The fake provider returns canned answers and would let a deployment "
+                "appear to work while answering nothing it was asked. "
+                "Set GENERATION_PROVIDER=groq."
+            )
+        if deployed and self.embedding_model.startswith("fake"):
+            raise RuntimeError(
+                f"embedding_model must not be a fake model name in "
+                f"staging/production (got {self.embedding_model!r}). That default "
+                f"belongs to the offline provider; with EMBEDDING_PROVIDER="
+                f"huggingface it would be sent to the API as a model name. Set "
+                f"EMBEDDING_MODEL, e.g. sentence-transformers/all-MiniLM-L6-v2."
+            )
 
     @property
     def glossary(self) -> dict[str, tuple[str, ...]]:

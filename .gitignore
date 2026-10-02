@@ -15,6 +15,12 @@ out/
 *.tsbuildinfo
 npm-debug.log*
 
+# Captured test output. `web/chatfail.txt` was committed with two vitest failures
+# that have since been fixed, so it asserted a broken frontend that no longer
+# exists. Failing-run captures are for the terminal; `npm test` output belongs in
+# CI logs, not the tree.
+*fail*.txt
+
 # Tooling caches
 .mypy_cache/
 .pytest_cache/

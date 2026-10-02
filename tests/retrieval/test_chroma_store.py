@@ -432,11 +432,20 @@ class TestChromaSelection:
             prod.validate_production()
 
     def test_production_accepts_chroma(self):
+        """Chroma is an acceptable production *backend* -- the providers are explicit.
+
+        The provider values are named rather than defaulted because `validate_production`
+        now refuses fake providers in deployed environments. That refusal is covered on
+        its own; what matters here is that the backend choice is not what gets rejected.
+        """
         from app.core.config import Settings as S
 
         prod = S(
             environment="production",
             database_url="postgresql+psycopg://rag:rag@localhost:5432/rag",
             vector_store="chroma",
+            embedding_provider="huggingface",
+            generation_provider="groq",
+            embedding_model="sentence-transformers/all-MiniLM-L6-v2",
         )
         prod.validate_production()

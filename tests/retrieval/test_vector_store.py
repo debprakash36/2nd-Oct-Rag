@@ -263,6 +263,142 @@ class TestBuildVectorStore:
             build_vector_store(fake, prod)
         assert Settings().vector_store == "sqlite"
 
+
+class TestFakeProvidersAreRefusedInProduction:
+    """A fixture that answers in production looks exactly like a working system.
+
+    `fake` is the right default for tests and local runs -- it is deterministic, free
+    and offline, and the embedding dimension does not depend on a third party being
+    up. In staging or production it is a fault for the same reason a SQLite vector
+    store is: the deployment starts, serves 200s, and produces numbers that look
+    like measurements.
+
+    The damage is not just wrong answers. Retrieval quality measured against fake
+    embeddings is a hash-function similarity, not a semantic one, and it is what
+    produced the 0.892 recall@10 baseline recorded in docs/known_issues.md. A
+    deployment that silently keeps the fake provider ships that number as if it
+    described the real system.
+    """
+
+    def _production_settings(self, **overrides) -> object:
+        """A production config that passes the Postgres checks.
+
+        The database and vector store must be real for the provider checks to be
+        the thing under test rather than a downstream failure firing first.
+        """
+        from app.core.config import Settings
+
+        return Settings(
+            environment="production",
+            database_url="postgresql+psycopg://rag:rag@localhost:5432/rag",
+            vector_store="pgvector",
+            embedding_dim=384,
+            **overrides,
+        )
+
+    def test_fake_embedding_provider_is_refused(self):
+
+        prod = self._production_settings(embedding_provider="fake")
+        with pytest.raises(RuntimeError, match="embedding_provider must not be 'fake'"):
+            prod.validate_production()
+
+    def test_fake_generation_provider_is_refused(self):
+        # Embedding settings are real here on purpose. The provider checks are
+        # sequential, so a fake *embedding* provider would raise first and this test
+        # would assert nothing about generation at all.
+        prod = self._production_settings(
+            embedding_provider="huggingface",
+            embedding_model="sentence-transformers/all-MiniLM-L6-v2",
+            generation_provider="fake",
+        )
+        with pytest.raises(
+            RuntimeError, match="generation_provider must not be 'fake'"
+        ):
+            prod.validate_production()
+
+    def test_a_real_pair_of_providers_is_accepted(self):
+        """The check must be satisfiable, or nobody can deploy."""
+        prod = self._production_settings(
+            embedding_provider="huggingface",
+            generation_provider="groq",
+            embedding_model="sentence-transformers/all-MiniLM-L6-v2",
+            hf_token="hf_x",
+            groq_api_key="gsk_x",
+        )
+        prod.validate_production()  # must not raise
+
+    def test_a_fake_model_name_is_refused_even_with_a_real_provider(self):
+        """The provider and the model name can disagree.
+
+        Switching `EMBEDDING_PROVIDER` to `huggingface` while leaving the default
+        `fake-embed-v1` would pass a provider-only check and then send that string
+        to the HuggingFace API as a model name -- which fails at the first query
+        rather than at startup.
+        """
+        prod = self._production_settings(
+            embedding_provider="huggingface",
+            generation_provider="groq",
+            embedding_model="fake-embed-v1",
+        )
+        with pytest.raises(RuntimeError, match="embedding_model must not be a fake"):
+            prod.validate_production()
+
+    def test_staging_is_covered_too(self):
+        """The check keys off `deployed`, so staging must behave like production."""
+        from app.core.config import Settings
+
+        staging = Settings(
+            environment="staging",
+            database_url="postgresql+psycopg://rag:rag@localhost:5432/rag",
+            vector_store="pgvector",
+            embedding_provider="fake",
+        )
+        with pytest.raises(RuntimeError, match="embedding_provider must not be 'fake'"):
+            staging.validate_production()
+
+    @pytest.mark.parametrize("environment", ["local", "test"])
+    def test_local_and_test_still_use_the_fake_providers(self, environment):
+        """The documented use that the `vector_store` check once broke.
+
+        `SqliteVectorStore` and the fake providers are the reason the test suite and
+        local runs need no API key and no Postgres. Gating these checks on the
+        environment rather than on the value is what preserves that, and it is the
+        reason this test exists alongside the refusals above.
+        """
+        from app.core.config import Settings
+
+        ok = Settings(
+            environment=environment,
+            database_url="sqlite:///./rag.db",
+            vector_store="sqlite",
+            embedding_provider="fake",
+            generation_provider="fake",
+            embedding_model="fake-embed-v1",
+            embedding_dim=64,
+        )
+        ok.validate_production()  # must not raise
+
+    def test_the_defaults_are_rejected_as_configured(self):
+        """Unset means fake, so a deploy that sets nothing is refused.
+
+        This is the realistic failure: someone sets `ENVIRONMENT=production` and
+        `DATABASE_URL`, checks that the process starts, and ships without touching
+        the provider variables because nothing forced them to.
+        """
+        from app.core.config import Settings
+
+        prod = Settings(
+            environment="production",
+            database_url="postgresql+psycopg://rag:rag@localhost:5432/rag",
+            vector_store="pgvector",
+            # embedding_provider / generation_provider / embedding_model all omitted,
+            # so they take their module defaults.
+        )
+        assert prod.embedding_provider == "fake"
+        assert prod.generation_provider == "fake"
+        with pytest.raises(RuntimeError, match="must not be 'fake'"):
+            prod.validate_production()
+
     def test_cosine_matches_manual_computation(self):
         """Guards the normalisation arithmetic against a sign error.
 
