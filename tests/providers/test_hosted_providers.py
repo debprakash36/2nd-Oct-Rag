@@ -59,6 +59,62 @@ class TestProtocolConformance:
         assert isinstance(FakeGenerationProvider(), GenerationProvider)
 
 
+class TestHuggingFaceEndpointShape:
+    """The hosted URL is part of the contract, so it is pinned rather than implied.
+
+    Nothing else in the suite caught this. Every other test here replaces `_post`
+    with a mock that returns whatever the handler invents, so the URL the provider
+    actually builds was never checked against anything -- and it was wrong. Against
+    the live API a request to the old shape returned HTTP 400, which
+    `_embed_batch` reports as "check the model name and HF_TOKEN". That message
+    sends an operator to debug two things that were both correct while the real
+    fault, a missing `/models` path segment, went unmentioned.
+
+    The check is on the path structure rather than the whole URL, so a host change
+    does not need this test updated, but a routing change does.
+    """
+
+    def test_url_places_the_model_under_the_models_segment(self):
+        provider = HuggingFaceEmbeddingProvider(
+            token="hf_secret",
+            base_url="https://router.huggingface.co/hf-inference",
+            model="sentence-transformers/all-MiniLM-L6-v2",
+            dim=384,
+            timeout=1.0,
+            batch_size=4,
+        )
+        assert provider._url == (
+            "https://router.huggingface.co/hf-inference/models/"
+            "sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
+        )
+
+    def test_model_appears_once_and_before_the_pipeline_segment(self):
+        """The failure mode was the model missing the `/models` prefix entirely."""
+        provider = HuggingFaceEmbeddingProvider(
+            token="", base_url="https://example.test/base", model="org/my-model",
+            dim=DIM, timeout=1.0, batch_size=4,
+        )
+        assert provider._url.count("org/my-model") == 1
+        assert "/models/org/my-model/pipeline/" in provider._url
+
+    def test_trailing_slash_on_the_base_does_not_double_up(self):
+        provider = HuggingFaceEmbeddingProvider(
+            token="", base_url="https://example.test/base/", model="m",
+            dim=DIM, timeout=1.0, batch_size=4,
+        )
+        assert "//pipeline" not in provider._url.replace("https://", "")
+
+    def test_default_base_url_is_the_live_endpoint(self):
+        """`api-inference.huggingface.co` no longer resolves.
+
+        Left in place, every hosted embedding call failed with a ConnectError that
+        no amount of debugging the token or the model name would have explained.
+        """
+        from app.core.config import Settings
+
+        assert Settings().hf_inference_url == "https://router.huggingface.co/hf-inference"
+
+
 class TestHuggingFaceEmbedding:
     def _provider(self, handler, **kwargs) -> HuggingFaceEmbeddingProvider:
         """A provider wired to a mock transport.

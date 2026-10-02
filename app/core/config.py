@@ -50,7 +50,11 @@ class Settings(BaseSettings):
     # pipeline is a single HTTP POST, so `httpx` -- already required by the test
     # harness -- is the whole client, and the hosted path costs no extra install.
     hf_token: str = ""
-    hf_inference_url: str = "https://api-inference.huggingface.co"
+    # `router.huggingface.co/hf-inference` is the current hosted endpoint. The older
+    # `api-inference.huggingface.co` no longer resolves -- a request to it fails to
+    # connect, which surfaces as an opaque ConnectError rather than a useful status.
+    # The provider appends `/models/{model}/pipeline/feature-extraction`.
+    hf_inference_url: str = "https://router.huggingface.co/hf-inference"
     # `sentence-transformers/all-MiniLM-L6-v2` is 384-dimensional, so switching to
     # it leaves `embedding_dim` unchanged. The stored vectors still all have to be
     # rebuilt: they were produced by a hash function, not a model.

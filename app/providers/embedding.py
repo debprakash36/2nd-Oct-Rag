@@ -93,7 +93,17 @@ class HuggingFaceEmbeddingProvider:
         batch_size: int,
     ) -> None:
         self._token = token
-        self._url = f"{base_url.rstrip('/')}/pipeline/feature-extraction/{model}"
+        # The route is `/{models}/{model}/pipeline/feature-extraction` -- note the
+        # `/models` segment, which is easy to drop and produces a 400 that looks
+        # like a bad model name or a bad token rather than a malformed URL. Verified
+        # against the live API: with `/models` omitted this 400s, and with it the same
+        # request returns 200 and a 384-dimension vector.
+        #
+        # `base_url` stays a plain host so callers cannot silently reintroduce the
+        # bug by passing an endpoint that already names a model.
+        self._url = (
+            f"{base_url.rstrip('/')}/models/{model}/pipeline/feature-extraction"
+        )
         self._model = model
         self._dim = dim
         self._timeout = timeout
